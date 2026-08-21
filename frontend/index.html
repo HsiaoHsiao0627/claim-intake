@@ -138,8 +138,18 @@
 
   .divider { border-top: 1px solid var(--line); margin: 28px 0 20px; }
   .test-note { font-size: 12px; color: var(--ink-soft); margin-bottom: 10px; }
-  #statusResult { font-size: 13px; margin-top: 12px; white-space: pre-wrap;
-    background: var(--page); border-radius: 8px; padding: 12px; display: none; }
+  #statusResult { font-size: 13.5px; margin-top: 12px; line-height: 1.75;
+    background: var(--page); border-radius: 8px; padding: 14px 16px; display: none; }
+  #statusResult .claim-summary-row { margin-bottom: 4px; }
+  #statusResult .claim-summary-decision { margin-top: 10px; padding: 10px 12px; border-radius: 8px; line-height: 1.6; }
+  #statusResult .claim-summary-approve { background: var(--accent-soft); color: var(--accent); }
+  #statusResult .claim-summary-review { background: var(--warn-bg); color: var(--warn-ink); }
+  #statusResult .claim-summary-error { background: var(--err-bg); color: var(--err-ink); }
+  #statusResult .claim-summary-pending { background: #eef1f2; color: var(--ink-soft); }
+  #statusResult .claim-summary-raw { margin-top: 12px; font-size: 12px; color: var(--ink-soft); cursor: pointer; }
+  #statusResult .claim-summary-raw pre { white-space: pre-wrap; word-break: break-all;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; margin-top: 6px; cursor: text; font-size: 11.5px; }
 
   .hidden { display: none; }
 </style>
@@ -575,19 +585,92 @@ document.getElementById("claimForm").addEventListener("submit", async (e) => {
   }
 });
 
+// ============================================================
+// 案件狀態自然語言呈現：把 /v1/claims/{case_id} 回傳的原始 JSON
+// 轉成保戶看得懂的中文摘要，原始 JSON 收進可展開的除錯區塊，
+// 不完全拿掉（開發/除錯時還是常常需要看完整欄位）。
+// ============================================================
+const CLAIM_STATUS_LABELS = {
+  received: "已受理，準備開始處理",
+  ocr_processing: "正在辨識您上傳的文件",
+  ocr_done: "文件辨識完成，準備解析事故描述",
+  description_parsing: "正在解析事故經過描述",
+  pipeline_processing: "正在進行理賠資格判斷",
+  completed: "審核完成",
+  escalated_human: "已轉交人工複核",
+  error: "處理時發生錯誤",
+};
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatClaimAmount(amount) {
+  if (amount === null || amount === undefined || amount === "") return "未提供";
+  const num = Number(amount);
+  return Number.isNaN(num) ? escapeHtml(amount) : `NT$ ${num.toLocaleString("zh-Hant-TW")}`;
+}
+
+function renderClaimSummary(data) {
+  const statusLabel = CLAIM_STATUS_LABELS[data.status] || data.status || "未知狀態";
+  const parts = [];
+
+  parts.push(`<div class="claim-summary-row"><strong>案件編號：</strong>${escapeHtml(data.case_id)}</div>`);
+  parts.push(`<div class="claim-summary-row"><strong>目前狀態：</strong>${escapeHtml(statusLabel)}</div>`);
+  parts.push(`<div class="claim-summary-row"><strong>申請人：</strong>${escapeHtml(data.applicant_name) || "未提供"}（保單號：${escapeHtml(data.policy_no) || "未提供"}）</div>`);
+  parts.push(`<div class="claim-summary-row"><strong>險種：</strong>${escapeHtml(data.insurance_type) || "未提供"}</div>`);
+  parts.push(`<div class="claim-summary-row"><strong>申請金額：</strong>${formatClaimAmount(data.claim_amount)}</div>`);
+  parts.push(`<div class="claim-summary-row"><strong>事故／就醫日期：</strong>${escapeHtml(data.incident_date) || "未提供"}</div>`);
+
+  const pipeline = data.pipeline_result;
+  if (data.status === "error") {
+    parts.push(`<div class="claim-summary-decision claim-summary-error">
+      <strong>處理發生錯誤</strong><br>${escapeHtml(data.error_message) || "詳情請洽系統管理員。"}
+    </div>`);
+  } else if (pipeline) {
+    const decision = pipeline.decision;
+    const reasons = Array.isArray(pipeline.reasons) ? pipeline.reasons.join("；") : null;
+    if (decision === "execute") {
+      parts.push(`<div class="claim-summary-decision claim-summary-approve">
+        <strong>✓ 系統判斷：符合受理條件</strong><br>
+        ${escapeHtml(reasons) || "案件資料完整，系統已完成資格判斷。"}
+      </div>`);
+    } else if (decision === "escalate_human") {
+      parts.push(`<div class="claim-summary-decision claim-summary-review">
+        <strong>⚠ 系統判斷：需人工複核</strong><br>
+        ${escapeHtml(reasons) || "系統判斷此案件需要由人工複核。"}
+      </div>`);
+    } else {
+      parts.push(`<div class="claim-summary-decision">系統判斷結果：${escapeHtml(decision) || "尚無結論"}</div>`);
+    }
+  } else if (data.status && data.status !== "escalated_human") {
+    parts.push(`<div class="claim-summary-decision claim-summary-pending">案件仍在處理中，尚未有最終判斷結果，請稍後再查詢一次。</div>`);
+  }
+
+  const rawJson = escapeHtml(JSON.stringify(data, null, 2));
+  parts.push(`<details class="claim-summary-raw"><summary>查看完整原始資料（除錯用）</summary><pre>${rawJson}</pre></details>`);
+
+  return parts.join("");
+}
+
 document.getElementById("lookupBtn").addEventListener("click", async () => {
   const caseId = document.getElementById("lookupInput").value.trim();
   const box = document.getElementById("statusResult");
   if (!caseId) return;
   box.style.display = "block";
-  box.textContent = "查詢中…";
+  box.innerHTML = "查詢中…";
   try {
     const resp = await fetch(`${API_BASE}/v1/claims/${encodeURIComponent(caseId)}`);
-    if (!resp.ok) { box.textContent = "查無此案件編號。"; return; }
+    if (!resp.ok) { box.innerHTML = "查無此案件編號。"; return; }
     const data = await resp.json();
-    box.textContent = JSON.stringify(data, null, 2);
+    box.innerHTML = renderClaimSummary(data);
   } catch {
-    box.textContent = "查詢失敗，請確認 API 是否啟動。";
+    box.innerHTML = "查詢失敗，請確認 API 是否啟動。";
   }
 });
 </script>
