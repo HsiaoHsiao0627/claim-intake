@@ -1,0 +1,7 @@
+venv/
+backend/data/
+backend/uploads/
+uploads/
+**/__pycache__/
+*.pyc
+.git/

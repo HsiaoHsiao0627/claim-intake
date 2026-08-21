@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>理賠案件後台總覽（測試系統）</title>
+<style>
+  :root {
+    --ink: #16232e;
+    --ink-soft: #4a5b68;
+    --line: #d8dee2;
+    --surface: #ffffff;
+    --page: #f3f6f7;
+    --accent: #0f5c56;
+    --accent-soft: #e3efed;
+    --warn-bg: #fdf3e3;
+    --warn-ink: #7a4a06;
+    --err-bg: #fbeaea;
+    --err-ink: #8a2c22;
+    --ok-bg: #e6f4ea;
+    --ok-ink: #1e6b34;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font-family: -apple-system, "Noto Sans TC", "PingFang TC", sans-serif;
+    line-height: 1.5;
+  }
+  .shell { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+  header.top { margin-bottom: 20px; display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  header.top .badge {
+    display: inline-block; font-size: 12px; letter-spacing: .04em;
+    background: var(--warn-bg); color: var(--warn-ink);
+    padding: 4px 10px; border-radius: 999px; margin-bottom: 8px;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  header.top p { color: var(--ink-soft); margin: 0; font-size: 13px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px; margin-bottom: 18px;
+  }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  .filters .field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+  .filters label { font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+  .filters input, .filters select {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    font-size: 14px; font-family: inherit; color: var(--ink); background: var(--surface);
+  }
+  .filters input:focus, .filters select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .btn {
+    padding: 9px 16px; border-radius: 8px; border: none; font-size: 14px;
+    font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #0c4a45; }
+  .btn.ghost { background: var(--accent-soft); color: var(--accent); }
+  .btn.ghost:hover { background: #d4e6e3; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  thead th {
+    text-align: left; color: var(--ink-soft); font-weight: 600; font-size: 12px;
+    padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  tbody td { padding: 9px 10px; border-bottom: 1px solid #eef1f2; vertical-align: top; }
+  tbody tr:hover { background: var(--page); cursor: pointer; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .pill.received, .pill.ocr_processing, .pill.pipeline_processing { background: var(--warn-bg); color: var(--warn-ink); }
+  .pill.ocr_done { background: var(--accent-soft); color: var(--accent); }
+  .pill.completed { background: var(--ok-bg); color: var(--ok-ink); }
+  .pill.escalated_human { background: #fdeee0; color: #a3520a; }
+  .pill.error { background: var(--err-bg); color: var(--err-ink); }
+  .pill.not_reviewed { background: #f0f1f3; color: var(--ink-soft); }
+  .pill.reviewing { background: var(--warn-bg); color: var(--warn-ink); }
+  .pill.reviewed { background: var(--ok-bg); color: var(--ok-ink); }
+
+  .pager { display: flex; align-items: center; gap: 10px; justify-content: flex-end; margin-top: 12px; font-size: 13px; color: var(--ink-soft); }
+
+  .empty { text-align: center; color: var(--ink-soft); padding: 40px 0; font-size: 14px; }
+
+  /* 詳細資料 modal */
+  .overlay {
+    display: none; position: fixed; inset: 0; background: rgba(15,25,32,.45);
+    align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; z-index: 50;
+  }
+  .overlay.open { display: flex; }
+  .modal { background: var(--surface); border-radius: 14px; max-width: 720px; width: 100%; padding: 24px; }
+  .modal h2 { font-size: 17px; margin: 0 0 4px; }
+  .modal .sub { color: var(--ink-soft); font-size: 13px; margin-bottom: 16px; }
+  .modal .close { float: right; background: none; border: none; font-size: 20px; cursor: pointer; color: var(--ink-soft); line-height: 1; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; font-size: 13.5px; margin-bottom: 14px; }
+  .kv .k { color: var(--ink-soft); }
+  .modal pre {
+    background: var(--page); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .section-title { font-size: 13px; font-weight: 700; margin: 16px 0 6px; color: var(--ink); }
+  .review-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .review-form select, .review-form input {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; font-family: inherit;
+  }
+  .review-form input[type=text] { flex: 1; min-width: 160px; }
+  .msg { font-size: 12px; margin-top: 6px; display: none; }
+  .msg.ok { color: var(--ok-ink); }
+  .msg.err { color: var(--err-ink); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div>
+      <div class="badge">內部後台・測試系統・目前無存取控制</div>
+      <h1>理賠案件總覽</h1>
+      <p>供後台人員檢視保戶送出的申請資料與處理狀態，可標記人工複核結果。</p>
+    </div>
+    <button class="btn ghost" id="exportBtn">匯出目前篩選結果 CSV</button>
+  </header>
+
+  <div class="card">
+    <div class="filters">
+      <div class="field">
+        <label>搜尋（案件編號／保單號／申請人）</label>
+        <input type="text" id="f_q" placeholder="例如 CLM-... 或姓名">
+      </div>
+      <div class="field">
+        <label>處理狀態</label>
+        <select id="f_status">
+          <option value="">全部</option>
+          <option value="received">已受理</option>
+          <option value="ocr_processing">OCR辨識中</option>
+          <option value="ocr_done">OCR完成</option>
+          <option value="pipeline_processing">審核中</option>
+          <option value="completed">已完成</option>
+          <option value="escalated_human">已轉人工</option>
+          <option value="error">錯誤</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>複核狀態</label>
+        <select id="f_review">
+          <option value="">全部</option>
+          <option value="not_reviewed">尚未複核</option>
+          <option value="reviewing">複核中</option>
+          <option value="reviewed">已複核</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>險種</label>
+        <select id="f_type">
+          <option value="">全部</option>
+          <option value="RSA">RSA（道路救援）</option>
+          <option value="TPL">TPL（第三人責任）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>管道</label>
+        <select id="f_channel">
+          <option value="">全部</option>
+          <option value="web">網頁</option>
+          <option value="line">LINE</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>建立日期起</label>
+        <input type="date" id="f_from">
+      </div>
+      <div class="field">
+        <label>建立日期迄</label>
+        <input type="date" id="f_to">
+      </div>
+      <button class="btn primary" id="searchBtn">查詢</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>案件編號</th>
+          <th>申請人</th>
+          <th>保單號</th>
+          <th>險種</th>
+          <th>金額</th>
+          <th>管道</th>
+          <th>處理狀態</th>
+          <th>複核狀態</th>
+          <th>建立時間</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="emptyMsg" style="display:none;">查無符合條件的案件</div>
+    <div class="pager">
+      <span id="pageInfo"></span>
+      <button class="btn ghost" id="prevBtn">上一頁</button>
+      <button class="btn ghost" id="nextBtn">下一頁</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <button class="close" id="closeModal">&times;</button>
+    <h2 id="m_case_id"></h2>
+    <div class="sub" id="m_sub"></div>
+
+    <div class="kv" id="m_kv"></div>
+
+    <div class="section-title">送出時填寫的原始欄位</div>
+    <pre id="m_submitted"></pre>
+
+    <div class="section-title">OCR 擷取結果</div>
+    <pre id="m_ocr"></pre>
+
+    <div class="section-title">協調層／法官代理人結果</div>
+    <pre id="m_pipeline"></pre>
+
+    <div class="section-title">標記人工複核</div>
+    <div class="review-form">
+      <select id="rv_status">
+        <option value="not_reviewed">尚未複核</option>
+        <option value="reviewing">複核中</option>
+        <option value="reviewed">已複核</option>
+      </select>
+      <input type="text" id="rv_by" placeholder="複核人員（選填）">
+      <input type="text" id="rv_note" placeholder="備註（選填）">
+      <button class="btn primary" id="rv_submit">儲存</button>
+    </div>
+    <div class="msg" id="rv_msg"></div>
+  </div>
+</div>
+
+<script>
+const API = ""; // 同源，直接打 /v1/admin/...
+let page = 1;
+const pageSize = 20;
+let currentCaseId = null;
+
+const statusLabel = {
+  received: "已受理", ocr_processing: "OCR辨識中", ocr_done: "OCR完成",
+  pipeline_processing: "審核中", completed: "已完成", escalated_human: "已轉人工", error: "錯誤",
+};
+const reviewLabel = { not_reviewed: "尚未複核", reviewing: "複核中", reviewed: "已複核" };
+
+function buildQuery() {
+  const params = new URLSearchParams();
+  const q = document.getElementById("f_q").value.trim();
+  const status = document.getElementById("f_status").value;
+  const review = document.getElementById("f_review").value;
+  const type = document.getElementById("f_type").value;
+  const channel = document.getElementById("f_channel").value;
+  const from = document.getElementById("f_from").value;
+  const to = document.getElementById("f_to").value;
+  if (q) params.set("q", q);
+  if (status) params.set("status", status);
+  if (review) params.set("review_status", review);
+  if (type) params.set("insurance_type", type);
+  if (channel) params.set("channel", channel);
+  if (from) params.set("date_from", from);
+  if (to) params.set("date_to", to);
+  return params;
+}
+
+async function loadList() {
+  const params = buildQuery();
+  params.set("page", page);
+  params.set("page_size", pageSize);
+  const res = await fetch(`${API}/v1/admin/claims?${params.toString()}`);
+  if (!res.ok) { alert("查詢失敗"); return; }
+  const data = await res.json();
+  renderTable(data.items);
+  document.getElementById("pageInfo").textContent =
+    `共 ${data.total} 筆，第 ${data.page} / ${Math.max(data.total_pages, 1)} 頁`;
+  document.getElementById("prevBtn").disabled = data.page <= 1;
+  document.getElementById("nextBtn").disabled = data.page >= data.total_pages;
+}
+
+function fmtAmount(n) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString("zh-Hant-TW");
+}
+
+function renderTable(items) {
+  const tbody = document.getElementById("tbody");
+  tbody.innerHTML = "";
+  document.getElementById("emptyMsg").style.display = items.length ? "none" : "block";
+  for (const c of items) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${c.case_id}</td>
+      <td>${c.applicant_name || "—"}</td>
+      <td>${c.policy_no || "—"}</td>
+      <td>${c.insurance_type || "—"}</td>
+      <td>${fmtAmount(c.claim_amount)}</td>
+      <td>${c.channel}</td>
+      <td><span class="pill ${c.status}">${statusLabel[c.status] || c.status}</span></td>
+      <td><span class="pill ${c.review_status}">${reviewLabel[c.review_status] || c.review_status}</span></td>
+      <td>${c.created_at}</td>
+    `;
+    tr.addEventListener("click", () => openDetail(c.case_id));
+    tbody.appendChild(tr);
+  }
+}
+
+async function openDetail(caseId) {
+  const res = await fetch(`${API}/v1/admin/claims/${caseId}`);
+  if (!res.ok) { alert("找不到案件"); return; }
+  const c = await res.json();
+  currentCaseId = c.case_id;
+
+  document.getElementById("m_case_id").textContent = c.case_id;
+  document.getElementById("m_sub").textContent =
+    `建立於 ${c.created_at}　最後更新 ${c.updated_at}　管道：${c.channel}`;
+
+  document.getElementById("m_kv").innerHTML = `
+    <div class="k">處理狀態</div><div><span class="pill ${c.status}">${statusLabel[c.status] || c.status}</span></div>
+    <div class="k">複核狀態</div><div><span class="pill ${c.review_status}">${reviewLabel[c.review_status] || c.review_status}</span></div>
+    <div class="k">申請人</div><div>${c.applicant_name || "—"}</div>
+    <div class="k">保單號</div><div>${c.policy_no || "—"}</div>
+    <div class="k">險種</div><div>${c.insurance_type || "—"}</div>
+    <div class="k">申請金額</div><div>${fmtAmount(c.claim_amount)}</div>
+    <div class="k">事故日期</div><div>${c.incident_date || "—"}</div>
+    <div class="k">聯絡方式</div><div>${c.contact_email || "—"} / ${c.contact_phone || "—"}</div>
+    ${c.error_message ? `<div class="k">錯誤訊息</div><div style="color:var(--err-ink)">${c.error_message}</div>` : ""}
+    ${c.reviewed_by ? `<div class="k">複核人員</div><div>${c.reviewed_by}（${c.reviewed_at || ""}）</div>` : ""}
+    ${c.review_note ? `<div class="k">複核備註</div><div>${c.review_note}</div>` : ""}
+    ${(c.ocr_filled_fields && c.ocr_filled_fields.length)
+      ? `<div class="k">OCR 自動帶入</div><div style="color:var(--warn-ink)">${c.ocr_filled_fields.join("、")}（非保戶手填，請留意查核）</div>`
+      : ""}
+  `;
+
+  document.getElementById("m_submitted").textContent = JSON.stringify(c.submitted_fields || {}, null, 2);
+  document.getElementById("m_ocr").textContent = c.ocr_result ? JSON.stringify(c.ocr_result, null, 2) : "（尚未執行）";
+  document.getElementById("m_pipeline").textContent = c.pipeline_result ? JSON.stringify(c.pipeline_result, null, 2) : "（尚未有結果）";
+
+  document.getElementById("rv_status").value = c.review_status || "not_reviewed";
+  document.getElementById("rv_by").value = c.reviewed_by || "";
+  document.getElementById("rv_note").value = c.review_note || "";
+  document.getElementById("rv_msg").style.display = "none";
+
+  document.getElementById("overlay").classList.add("open");
+}
+
+document.getElementById("closeModal").addEventListener("click", () => {
+  document.getElementById("overlay").classList.remove("open");
+});
+document.getElementById("overlay").addEventListener("click", (e) => {
+  if (e.target.id === "overlay") document.getElementById("overlay").classList.remove("open");
+});
+
+document.getElementById("rv_submit").addEventListener("click", async () => {
+  if (!currentCaseId) return;
+  const body = new URLSearchParams();
+  body.set("review_status", document.getElementById("rv_status").value);
+  body.set("reviewed_by", document.getElementById("rv_by").value);
+  body.set("review_note", document.getElementById("rv_note").value);
+  const msg = document.getElementById("rv_msg");
+  try {
+    const res = await fetch(`${API}/v1/admin/claims/${currentCaseId}/review`, {
+      method: "POST", body,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    msg.textContent = "已儲存"; msg.className = "msg ok"; msg.style.display = "block";
+    loadList();
+  } catch (e) {
+    msg.textContent = "儲存失敗：" + e.message; msg.className = "msg err"; msg.style.display = "block";
+  }
+});
+
+document.getElementById("searchBtn").addEventListener("click", () => { page = 1; loadList(); });
+document.getElementById("prevBtn").addEventListener("click", () => { if (page > 1) { page--; loadList(); } });
+document.getElementById("nextBtn").addEventListener("click", () => { page++; loadList(); });
+document.getElementById("exportBtn").addEventListener("click", () => {
+  const params = buildQuery();
+  window.location.href = `${API}/v1/admin/claims/export.csv?${params.toString()}`;
+});
+
+loadList();
+</script>
+</body>
+</html>
