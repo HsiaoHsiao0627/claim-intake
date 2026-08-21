@@ -200,6 +200,25 @@
 
       <div class="row2">
         <div class="field">
+          <label for="policy_active">保單於事故當下是否有效（僅道路救援／車險案件需要，其他險種可留空）</label>
+          <select id="policy_active" name="policy_active">
+            <option value="">未確認／不確定</option>
+            <option value="是">是，事故當下保單有效</option>
+            <option value="否">否，保單已過期或未生效</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="rsa_addon_purchased">是否已投保道路救援附加條款（僅道路救援／車險案件需要）</label>
+          <select id="rsa_addon_purchased" name="rsa_addon_purchased">
+            <option value="">未確認／不確定</option>
+            <option value="是">是，已投保</option>
+            <option value="否">否，未投保</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="field">
           <label for="claim_amount">申請理賠金額 (NT$)（未上傳佐證文件時必填）</label>
           <input id="claim_amount" name="claim_amount" type="number" min="0" step="1"
                  placeholder="或上傳收據／估價單讓系統自動帶入">
@@ -302,88 +321,121 @@ function setupUploadZone(zoneId, inputId, listId) {
 
   return {
     getFiles: () => files,
-    reset: () => { files = []; render(); }
+    reset: () => { files = []; render(); },
+    // 示範案例用：塞進去的不是使用者真的選的檔案，是純前端產生的極小佔位
+    // 檔案（見下方 makeDemoFile），純粹是為了讓後端「有沒有上傳文件」的
+    // 判斷能被誠實觸發（RSA Rule Agent 需要知道 policy_record／
+    // service_request_record 是否存在），檔名會清楚標明是 demo 檔案，
+    // 不會被誤認成真實文件。
+    addSimulated: (newFiles) => addFiles(newFiles)
   };
 }
 
 const policyUpload = setupUploadZone("policyUploadZone", "policyFileInput", "policyFileList");
 const evidenceUpload = setupUploadZone("uploadZone", "fileInput", "fileList");
 
+// 純前端產生的極小佔位圖檔（1x1 透明 PNG），只用來讓「有沒有上傳文件」這件事
+// 對後端來說是真的，不代表任何真實保單或救援單據內容。
+function makeDemoFile(name) {
+  const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], name, { type: "image/png" });
+}
+
 // ============================================================
-// Demo 案例代入（僅供對主管機關展示流程使用，不會實際上傳任何檔案，
-// 純粹是把左側預設的案例資料填進表單欄位，方便現場示範不同審核情境）
+// Demo 案例代入（僅供對主管機關展示流程使用）
+//
+// 2026-08 改版：全部改成道路救援（RSA）情境，insurance_type 固定用
+// "車險"（RSA Rule Agent 的 is_rsa_case() 認得這個值），並依情境決定
+// 是否附上 demo 佔位文件、是否填 policy_active/rsa_addon_purchased——
+// 這樣「順利核准」類的案例才有機會真正跑到 decide_rsa_v3() 的
+// ELIGIBLE_FOR_PROCESS，而不是每次都因為缺欄位卡在 NEED_MORE_INFORMATION。
 // ============================================================
 const DEMO_CASES = [
   {
-    id: "approve-medical",
+    id: "approve-towing",
     tag: "approve", tagLabel: "順利核准",
-    title: "案例一・流感住院醫療給付",
-    desc: "資料齊全、金額合理，示範正常核准流程",
+    title: "案例一・國道拋錨一般拖吊",
+    desc: "資料齊全、保單狀態明確，示範完整跑到核准的流程",
+    attachDemoFiles: true,
     data: {
-      policy_no: "POL-2026-10234", applicant_name: "林雅婷",
-      insurance_type: "醫療險", claim_amount: "8600", incident_date: "2026-07-12",
-      description: "因流感引發肺炎住院三天，檢附診斷證明與醫療收據，申請住院醫療給付。",
-      contact_email: "yating.lin@example.com", contact_phone: "0912-345-678"
-    }
-  },
-  {
-    id: "approve-accident",
-    tag: "approve", tagLabel: "順利核准",
-    title: "案例二・機車滑倒意外傷害",
-    desc: "資料齊全、金額合理，示範正常核准流程",
-    data: {
-      policy_no: "POL-2026-10877", applicant_name: "陳柏宇",
-      insurance_type: "意外險", claim_amount: "15000", incident_date: "2026-06-03",
-      description: "騎機車上班途中不慎滑倒，右手腕骨裂，於醫院急診包紮並回診追蹤，申請意外傷害醫療給付。",
+      policy_no: "POL-2026-40231", applicant_name: "陳柏宇",
+      insurance_type: "車險", policy_active: "是", rsa_addon_purchased: "是",
+      claim_amount: "2500", incident_date: "2026-07-10",
+      description: "自用小客車行駛國道一號北上時引擎故障拋錨，已撥打兆豐指定道路救援中心專線聯絡，由專人到場拖吊至最近保養廠，過程未經過需另外收費的橋樑或隧道，車上也沒有搭載其他乘客或貨物。",
       contact_email: "boyu.chen@example.com", contact_phone: "0922-111-222"
     }
   },
   {
-    id: "review-car",
-    tag: "review", tagLabel: "高額需複核",
-    title: "案例三・車輛碰撞高額維修",
-    desc: "金額偏高，示範觸發人工複核流程",
+    id: "approve-battery",
+    tag: "approve", tagLabel: "順利核准",
+    title: "案例二・社區停車場電瓶救援",
+    desc: "資料齊全、保單狀態明確，示範完整跑到核准的流程",
+    attachDemoFiles: true,
     data: {
-      policy_no: "POL-2026-20456", applicant_name: "王建宏",
-      insurance_type: "車險", claim_amount: "320000", incident_date: "2026-05-20",
-      description: "自小客車於路口與對向車輛發生碰撞，車頭嚴重毀損，需更換引擎與車體鈑金，估價金額偏高，需人工複核估價明細。",
+      policy_no: "POL-2026-40587", applicant_name: "林雅婷",
+      insurance_type: "車險", policy_active: "是", rsa_addon_purchased: "是",
+      claim_amount: "800", incident_date: "2026-07-14",
+      description: "自用小客車停放於社區地下停車場時，因電瓶老舊導致無法發動，已聯絡兆豐指定道路救援中心到場搭電啟動，未使用拖吊服務，車上沒有搭載乘客或貨物。",
+      contact_email: "yating.lin@example.com", contact_phone: "0912-345-678"
+    }
+  },
+  {
+    id: "review-terrain",
+    tag: "review", tagLabel: "高額需複核",
+    title: "案例三・山區特殊地形拖吊",
+    desc: "資料齊全但金額偏高、需特殊作業，示範金額複核情境",
+    attachDemoFiles: true,
+    data: {
+      policy_no: "POL-2026-50120", applicant_name: "王建宏",
+      insurance_type: "車險", policy_active: "是", rsa_addon_purchased: "是",
+      claim_amount: "45000", incident_date: "2026-06-28",
+      description: "營業用小貨車於山區產業道路行駛時滑出路肩、卡在邊坡，需要特殊吊掛作業才能拖吊回收，已聯絡兆豐指定救援中心到場處理，因地形特殊，拖吊費用明顯高於一般案件。",
       contact_email: "chienhung.wang@example.com", contact_phone: "0933-456-789"
     }
   },
   {
-    id: "review-surgery",
+    id: "review-unofficial-tow",
     tag: "review", tagLabel: "高額需複核",
-    title: "案例四・手術住院高額給付",
-    desc: "金額偏高，示範觸發人工複核流程",
+    title: "案例四・自行叫車未經指定中心",
+    desc: "未透過指定救援中心派遣、金額偏高，示範需人工複核情境",
+    attachDemoFiles: true,
     data: {
-      policy_no: "POL-2026-20789", applicant_name: "李美惠",
-      insurance_type: "醫療險", claim_amount: "185000", incident_date: "2026-04-08",
-      description: "因子宮肌瘤接受達文西微創手術並住院五天，申請手術及住院醫療給付，金額超過一般案件平均值，需複核手術認定與收費明細。",
+      policy_no: "POL-2026-50344", applicant_name: "李美惠",
+      insurance_type: "車險", policy_active: "是", rsa_addon_purchased: "是",
+      claim_amount: "18000", incident_date: "2026-07-02",
+      description: "自用小客車於國道拋錨，車主自行聯絡民間拖吊業者到場處理，並未透過兆豐指定道路救援中心派遣即自行完成拖吊，事後申請的理賠金額偏高。",
       contact_email: "meihui.li@example.com", contact_phone: "0955-678-901"
     }
   },
   {
-    id: "incomplete-date-contact",
+    id: "incomplete-vague-description",
     tag: "incomplete", tagLabel: "資料不全",
-    title: "案例五・缺就醫日期與聯絡方式",
-    desc: "刻意留白必填欄位，示範送出時的退件提示",
+    title: "案例五・事故描述過於簡略",
+    desc: "保單狀態與文件都齊全，但描述太籠統解析不出關鍵欄位",
+    attachDemoFiles: true,
     data: {
-      policy_no: "POL-2026-30112", applicant_name: "張淑芬",
-      insurance_type: "意外險", claim_amount: "4200", incident_date: "",
-      description: "於住家樓梯跌倒扭傷腳踝，僅口頭告知，尚未提供正式診斷證明或收據。",
-      contact_email: "", contact_phone: ""
+      policy_no: "POL-2026-60011", applicant_name: "張淑芬",
+      insurance_type: "車險", policy_active: "是", rsa_addon_purchased: "是",
+      claim_amount: "3000", incident_date: "2026-07-05",
+      description: "車子壞了，麻煩幫忙處理理賠，謝謝。",
+      contact_email: "shufen.chang@example.com", contact_phone: "0966-000-111"
     }
   },
   {
-    id: "incomplete-policy",
+    id: "incomplete-missing-policy-status",
     tag: "incomplete", tagLabel: "資料不全",
-    title: "案例六・缺保單號碼與姓名",
-    desc: "刻意留白必填欄位，示範送出時的退件提示",
+    title: "案例六・保單狀態未確認且未附文件",
+    desc: "描述清楚，但保單有效性、附加條款、佐證文件都未提供",
+    attachDemoFiles: false,
     data: {
-      policy_no: "", applicant_name: "",
-      insurance_type: "車險", claim_amount: "52000", incident_date: "2026-07-01",
-      description: "行照與保單於車輛全損現場遺失，尚未補辦保單影本，暫以口頭申報車輛碰撞理賠。",
-      contact_email: "unknown@example.com", contact_phone: "0966-000-111"
+      policy_no: "POL-2026-60288", applicant_name: "吳建志",
+      insurance_type: "車險", policy_active: "", rsa_addon_purchased: "",
+      claim_amount: "1200", incident_date: "2026-07-08",
+      description: "自用小客車爆胎，已聯絡兆豐指定道路救援中心到場協助更換備胎。",
+      contact_email: "chienchih.wu@example.com", contact_phone: "0977-222-333"
     }
   }
 ];
@@ -394,15 +446,22 @@ function applyDemoCase(demoCase) {
   form.policy_no.value = d.policy_no;
   form.applicant_name.value = d.applicant_name;
   form.insurance_type.value = d.insurance_type;
+  form.policy_active.value = d.policy_active;
+  form.rsa_addon_purchased.value = d.rsa_addon_purchased;
   form.claim_amount.value = d.claim_amount;
   form.incident_date.value = d.incident_date;
   form.description.value = d.description;
   form.contact_email.value = d.contact_email;
   form.contact_phone.value = d.contact_phone;
 
-  // 案例資料不含真實檔案，先清空目前的上傳清單，避免混用
+  // 先清空目前的上傳清單，需要附 demo 文件的案例再塞入佔位檔案；
+  // 「資料不全」類的案例刻意不附文件，示範文件缺漏時的誠實轉人工。
   policyUpload.reset();
   evidenceUpload.reset();
+  if (demoCase.attachDemoFiles) {
+    policyUpload.addSimulated([makeDemoFile("demo_保單照片.png")]);
+    evidenceUpload.addSimulated([makeDemoFile("demo_救援派工單.png")]);
+  }
 
   // 若前一次示範已經送出過表單，重新顯示表單、隱藏成功畫面與錯誤訊息
   document.getElementById("confirmCard").classList.add("hidden");
@@ -487,6 +546,8 @@ document.getElementById("claimForm").addEventListener("submit", async (e) => {
   fd.append("policy_no", form.policy_no.value);
   fd.append("applicant_name", form.applicant_name.value);
   fd.append("insurance_type", form.insurance_type.value);
+  fd.append("policy_active", form.policy_active.value);
+  fd.append("rsa_addon_purchased", form.rsa_addon_purchased.value);
   fd.append("claim_amount", form.claim_amount.value);
   fd.append("incident_date", form.incident_date.value);
   fd.append("description", form.description.value);

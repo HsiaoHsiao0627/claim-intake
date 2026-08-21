@@ -75,6 +75,13 @@ async def submit_claim(
     contact_email: Optional[str] = Form(None),
     contact_phone: Optional[str] = Form(None),
     channel: str = Form("web"),
+    # 2026-08 新增：RSA Rule Agent 的 decide_rsa_v3() 需要知道保單事故當下
+    # 是否有效、有沒有投保道路救援附加條款，這兩個欄位在此之前完全沒有
+    # 管道收集，導致 RSA 案件不管多完整都一定卡在 NEED_MORE_INFORMATION。
+    # 只在申請險種是車險／道路救援相關時前端才會顯示，其他險種留空即可，
+    # 沒填就是 None，交給下游誠實判斷「不知道」，不強迫二選一。
+    policy_active: Optional[str] = Form(None),
+    rsa_addon_purchased: Optional[str] = Form(None),
     policy_documents: list[UploadFile] = File(default=[]),
     evidence_documents: list[UploadFile] = File(default=[]),
 ):
@@ -98,6 +105,7 @@ async def submit_claim(
         "insurance_type": insurance_type, "claim_amount": claim_amount,
         "incident_date": incident_date, "description": description,
         "contact_email": contact_email, "contact_phone": contact_phone,
+        "policy_active": policy_active, "rsa_addon_purchased": rsa_addon_purchased,
     }
 
     case_id = store.create_claim(submitted_fields, file_paths={}, channel=channel)
@@ -199,8 +207,22 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
             return
 
         store.update_status(case_id, "pipeline_processing")
+
+        # 2026-08 新增：把「有沒有上傳保單照片／佐證文件」轉換成 RSA Rule
+        # Agent 需要的 documents.available_types。這裡只能誠實地做到「有
+        # 上傳檔案就視為對應文件存在」，沒辦法驗證檔案內容是否真的符合
+        # policy_record／service_request_record 的定義——那屬於 OCR 或
+        # 人工複核的範圍，不是這一層該做的判斷。目前只有 RSA 案件會讀
+        # 這個欄位，其他險種送過去也不影響。
+        available_document_types = []
+        if file_paths.get("policy"):
+            available_document_types.append("policy_record")
+        if file_paths.get("evidence"):
+            available_document_types.append("service_request_record")
+
         claim_data = {**submitted_fields, "ocr_result": ocr_result,
-                      "description_parsed": parse_result}
+                      "description_parsed": parse_result,
+                      "available_document_types": available_document_types}
         result = await seams.submit_to_orchestrator_with_fallback(case_id, claim_data)
 
         final_status = "escalated_human" if result.get("decision") == "escalate_human" else "completed"
