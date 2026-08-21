@@ -288,8 +288,23 @@ class HTTPOrchestratorClient(OrchestratorClient):
         self.api_key = api_key
         self.timeout = timeout
 
+    async def _get_id_token(self) -> str | None:
+        """Cloud Run 服務間呼叫需要用目標服務網址當 audience 換一張 Google 簽發的
+        ID token，否則會被 Cloud Run IAM 層直接擋在門口(連程式碼都進不去)。
+        本機或非 GCP 環境跑不出 token 是正常的，回傳 None、讓呼叫端照舊只帶 API Key。"""
+        try:
+            import google.auth.transport.requests
+            import google.oauth2.id_token
+            request = google.auth.transport.requests.Request()
+            return google.oauth2.id_token.fetch_id_token(request, self.base_url)
+        except Exception:
+            return None
+
     async def submit(self, case_id: str, claim_data: dict) -> dict:
         headers = {"X-API-Key": self.api_key} if self.api_key else {}
+        token = await self._get_id_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/v1/submit-claim",
