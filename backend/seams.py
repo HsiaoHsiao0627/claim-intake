@@ -61,15 +61,64 @@ class RealOCRExtractor(OCRExtractor):
         "你是保險保單文件擷取助手。請從這張保單影像中擷取以下欄位，"
         "只回傳 JSON，不要有其他文字、不要用 markdown code block：\n"
         '{"policy_no": "文字或null", "insured_name": "文字或null", '
-        '"policy_period_start": "YYYY-MM-DD或null", "policy_period_end": "YYYY-MM-DD或null"}\n'
+        '"policy_period_start": "YYYY-MM-DD或null", "policy_period_end": "YYYY-MM-DD或null", '
+        '"vehicle_plate_no": "文字或null（車牌號碼）", '
+        '"vehicle_brand_model": "文字或null（車輛廠牌型號）", '
+        '"vehicle_use": "自用或營業用或null", '
+        '"rsa_addon_purchased": "true或false或null（保單上是否明確載明投保道路救援／道路救援服務附加條款，'
+        '文件沒提到就填null，不要用常識或險種名稱去猜測）"}\n'
         "看不清楚或文件中沒有某欄位，該欄位填 null，不要用猜測值填充。"
     )
     EVIDENCE_PROMPT = (
         "你是保險理賠文件擷取助手。請從這份文件中擷取以下欄位，"
         "只回傳 JSON，不要有其他文字、不要用 markdown code block：\n"
-        '{"amount": 數字或null, "date": "YYYY-MM-DD或null", "diagnosis": "文字或null"}\n'
+        '{"amount": 數字或null, "date": "YYYY-MM-DD或null", '
+        '"diagnosis": "文字或null（僅醫療相關文件適用，非醫療文件此欄位填null）", '
+        '"service_type": "TOWING或BATTERY_JUMP或FUEL_DELIVERY或LOCKOUT或TIRE_CHANGE或OTHER或null'
+        '（僅道路救援服務單據適用，文件沒提到就填null）", '
+        '"service_location": "文字或null（服務地點，僅道路救援服務單據適用）", '
+        '"towing_distance_km": "數字或null（拖吊公里數，單據沒有明確載明就填null，不要用猜測值填充）"}\n'
         "看不清楚或文件中沒有某欄位，該欄位填 null，不要用猜測值填充。"
     )
+
+    # 2026-08 新增：Gemini 在沒有強制結構化輸出（response_schema）時，即使
+    # prompt 裡明確要求了完整欄位清單，實測發現它仍可能整個省略某些欄位
+    # （不是回傳 null，是連 key 都不見），導致 vehicle_use／rsa_addon_purchased／
+    # service_type／service_location／towing_distance_km 這類欄位平白漏抓。
+    # 加上 response_schema 強制規定「這八／六個欄位都必須存在」，讓 Gemini
+    # 不能再省略——不確定的值它還是可以填 null，只是不能整個不回傳這個欄位。
+    POLICY_RESPONSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "policy_no": {"type": "string", "nullable": True},
+            "insured_name": {"type": "string", "nullable": True},
+            "policy_period_start": {"type": "string", "nullable": True},
+            "policy_period_end": {"type": "string", "nullable": True},
+            "vehicle_plate_no": {"type": "string", "nullable": True},
+            "vehicle_brand_model": {"type": "string", "nullable": True},
+            "vehicle_use": {"type": "string", "nullable": True},
+            "rsa_addon_purchased": {"type": "boolean", "nullable": True},
+        },
+        "required": [
+            "policy_no", "insured_name", "policy_period_start", "policy_period_end",
+            "vehicle_plate_no", "vehicle_brand_model", "vehicle_use", "rsa_addon_purchased",
+        ],
+    }
+    EVIDENCE_RESPONSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "amount": {"type": "number", "nullable": True},
+            "date": {"type": "string", "nullable": True},
+            "diagnosis": {"type": "string", "nullable": True},
+            "service_type": {"type": "string", "nullable": True},
+            "service_location": {"type": "string", "nullable": True},
+            "towing_distance_km": {"type": "number", "nullable": True},
+        },
+        "required": [
+            "amount", "date", "diagnosis",
+            "service_type", "service_location", "towing_distance_km",
+        ],
+    }
 
     def __init__(self, api_key: str, model: str = "gemini-flash-latest"):
         if not api_key:
@@ -80,11 +129,15 @@ class RealOCRExtractor(OCRExtractor):
 
     async def extract(self, policy_files: list, evidence_files: list) -> dict:
         return {
-            "policy": await self._extract_block(policy_files, self.POLICY_PROMPT),
-            "evidence": await self._extract_block(evidence_files, self.EVIDENCE_PROMPT),
+            "policy": await self._extract_block(
+                policy_files, self.POLICY_PROMPT, self.POLICY_RESPONSE_SCHEMA
+            ),
+            "evidence": await self._extract_block(
+                evidence_files, self.EVIDENCE_PROMPT, self.EVIDENCE_RESPONSE_SCHEMA
+            ),
         }
 
-    async def _extract_block(self, file_paths: list, prompt: str) -> dict:
+    async def _extract_block(self, file_paths: list, prompt: str, response_schema: dict) -> dict:
         fields: dict = {}
         conflicts: dict = {}
         per_file = []
@@ -92,7 +145,7 @@ class RealOCRExtractor(OCRExtractor):
 
         for path in file_paths:
             try:
-                extracted = await self._extract_one(path, prompt)
+                extracted = await self._extract_one(path, prompt, response_schema)
                 per_file.append({"file": path, "status": "ok", "raw": extracted})
                 for key, value in extracted.items():
                     if value is None:
@@ -115,11 +168,17 @@ class RealOCRExtractor(OCRExtractor):
             "errors": errors,
         }
 
-    async def _extract_one(self, file_path: str, prompt: str) -> dict:
+    async def _extract_one(self, file_path: str, prompt: str, response_schema: dict) -> dict:
+        from google.genai import types
+
         uploaded = await self._client.aio.files.upload(file=file_path)
         resp = await self._client.aio.models.generate_content(
             model=self._model,
             contents=[uploaded, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=response_schema,
+            ),
         )
         text = resp.text.strip()
         if text.startswith("```"):

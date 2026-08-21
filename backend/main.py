@@ -208,6 +208,35 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
 
         store.update_status(case_id, "pipeline_processing")
 
+        # 2026-08 三次更新：把「描述解析結果」跟「OCR 從保單／佐證文件讀到的
+        # RSA 專屬欄位」合併成 rsa_fields，送給 RSA Rule Agent。合併順序：
+        # OCR 優先於描述解析——保戶上傳的文件比自由文字敘述更可靠，呼應
+        # 「OCR 判斷結果優先於 description」的既有原則，這裡延伸到 RSA 專屬
+        # 欄位上。towing_distance_km 只有 OCR 讀得到（描述解析沒有這個欄位），
+        # 沒讀到就誠實留 None，不用其他資訊推算。
+        policy_ocr_fields = (ocr_result.get("policy") or {}).get("fields", {})
+        evidence_ocr_fields = (ocr_result.get("evidence") or {}).get("fields", {})
+
+        rsa_fields = dict(parsed_fields)
+        if not _blank(evidence_ocr_fields.get("service_type")):
+            rsa_fields["requested_service"] = evidence_ocr_fields["service_type"]
+        if not _blank(evidence_ocr_fields.get("service_location")):
+            rsa_fields["location"] = evidence_ocr_fields["service_location"]
+        if not _blank(evidence_ocr_fields.get("towing_distance_km")):
+            rsa_fields["towing_distance_km"] = evidence_ocr_fields["towing_distance_km"]
+        if not _blank(policy_ocr_fields.get("vehicle_use")):
+            rsa_fields["vehicle_use"] = policy_ocr_fields["vehicle_use"]
+
+        # rsa_addon_purchased 是表單上的手動選單（是／否／不確定），代表保戶
+        # 或客服人員的明確輸入，永遠優先。只有保戶留空（未確認／不確定）時，
+        # 才用 OCR 從保單文件上讀到的值頂上——這裡是唯一會回頭修改
+        # submitted_fields 的地方，因為這個欄位本來就該是「手動優先、OCR 補位」
+        # 的邏輯，其餘 RSA 欄位（vehicle_use/requested_service/...）沒有對應的
+        # 手動輸入管道，不需要這層判斷。
+        ocr_addon = policy_ocr_fields.get("rsa_addon_purchased")
+        if _blank(submitted_fields.get("rsa_addon_purchased")) and ocr_addon is not None:
+            submitted_fields["rsa_addon_purchased"] = "是" if ocr_addon else "否"
+
         # 2026-08 新增：把「有沒有上傳保單照片／佐證文件」轉換成 RSA Rule
         # Agent 需要的 documents.available_types。這裡只能誠實地做到「有
         # 上傳檔案就視為對應文件存在」，沒辦法驗證檔案內容是否真的符合
@@ -222,6 +251,7 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
 
         claim_data = {**submitted_fields, "ocr_result": ocr_result,
                       "description_parsed": parse_result,
+                      "rsa_fields": rsa_fields,
                       "available_document_types": available_document_types}
         result = await seams.submit_to_orchestrator_with_fallback(case_id, claim_data)
 
