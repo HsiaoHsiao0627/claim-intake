@@ -82,6 +82,13 @@ async def submit_claim(
     # 沒填就是 None，交給下游誠實判斷「不知道」，不強迫二選一。
     policy_active: Optional[str] = Form(None),
     rsa_addon_purchased: Optional[str] = Form(None),
+    # 2026-08 新增：TPL Claim Agent（tpl-claim-agent-api）需要這三個欄位才能
+    # 呼叫 /v1/tpl/claim，且 own_fault_pct 是理賠金額計算的關鍵數字，刻意不
+    # 靠描述解析用 LLM 從自由文字猜，而是讓保戶/客服明確填寫。只在申請險種
+    # 是第三人責任險時前端才會顯示，其他險種留空即可。
+    accident_area: Optional[str] = Form(None),
+    own_fault_pct: Optional[float] = Form(None),
+    injury_desc: Optional[str] = Form(None),
     policy_documents: list[UploadFile] = File(default=[]),
     evidence_documents: list[UploadFile] = File(default=[]),
 ):
@@ -106,6 +113,8 @@ async def submit_claim(
         "incident_date": incident_date, "description": description,
         "contact_email": contact_email, "contact_phone": contact_phone,
         "policy_active": policy_active, "rsa_addon_purchased": rsa_addon_purchased,
+        "accident_area": accident_area, "own_fault_pct": own_fault_pct,
+        "injury_desc": injury_desc,
     }
 
     case_id = store.create_claim(submitted_fields, file_paths={}, channel=channel)
@@ -146,6 +155,100 @@ _EVIDENCE_FIELD_MAP = {"amount": "claim_amount", "date": "incident_date"}
 
 def _blank(value) -> bool:
     return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+# 2026-08 更新：法官代理人（judge-agent）已經接上，取代原本 claim-intake 自己
+# 猜的「confidence==low 就轉人工」門檻。真正的金額公平性(Tukey IQR)、詐欺旗標、
+# 審推理都在 judge-agent 那邊做，claim-intake 這裡只負責把 TPL Claim Agent 的
+# 輸出轉成 judge-agent 看得懂的 case dict 形狀（對照 judge-agent 的
+# TPLValCaseLoader.load()），不重新判斷任何金額合理性——這條界線很重要：
+# claim-intake 不能把猜測的業務規則混進來冒充法官代理人的判斷。
+# 2026-08 新增：TPL Rules Agent 吃的是自由文字 case_description（對齊訓練資料
+# 的「## 案件描述」格式），不是結構化欄位，這裡把表單欄位組成一段敘述文字。
+# 刻意用「（未提供）」而不是略過欄位，讓 Rules Agent 自己判斷資訊夠不夠，
+# 不要讓 claim-intake 這邊先幫忙腦補或省略掉空欄位造成的資訊落差。
+def _build_tpl_case_description(submitted_fields: dict) -> str:
+    accident_area = submitted_fields.get("accident_area") or "（未提供）"
+    own_fault_pct = submitted_fields.get("own_fault_pct")
+    own_fault_str = f"{own_fault_pct}%" if own_fault_pct not in (None, "") else "（未提供，責任比例尚未確定）"
+    injury_desc = submitted_fields.get("injury_desc") or "（未提供）"
+    general_desc = submitted_fields.get("description") or "（未提供）"
+    claim_amount = submitted_fields.get("claim_amount")
+    claim_amount_str = f"新台幣 {claim_amount} 元" if claim_amount not in (None, "") else "（未提供）"
+    return (
+        f"事故地區：{accident_area}。本車肇責比例：{own_fault_str}。\n"
+        f"傷勢描述：{injury_desc}\n"
+        f"事故經過：{general_desc}\n"
+        f"申請理賠金額：{claim_amount_str}"
+    )
+
+
+def _build_judge_case_from_tpl(case_id: str, submitted_fields: dict, ocr_result: dict,
+                                suggestion: dict, retry_count: int) -> dict:
+    policy_fields = (ocr_result.get("policy") or {}).get("fields", {})
+    context = suggestion.get("_retrieved_context") or {}
+    items = suggestion.get("suggested_items", [])
+    if not isinstance(items, list):
+        items = []
+
+    # reasoning_review 要看的是「理賠代理人有沒有忠實反映自己檢索到的證據」，
+    # TPL Claim Agent 是逐項(item)給 reasoning，這裡合併成一段整案 reasoning
+    # 文字，並把每項引用的案號/條款號去重彙總，不做任何金額或合理性的判斷。
+    reasoning_parts, cited_case_ids, cited_policy_ids = [], set(), set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        category = item.get("item_category", "未分類")
+        summary = item.get("reasoning_summary")
+        if summary:
+            reasoning_parts.append(f"【{category}】{summary}")
+        for case_no in ((item.get("similar_case_reference") or {}).get("case_nos") or []):
+            if case_no:
+                cited_case_ids.add(case_no)
+        clause_id = (item.get("amount_basis") or {}).get("policy_clause_id")
+        if clause_id:
+            cited_policy_ids.add(clause_id)
+
+    own_fault_pct = submitted_fields.get("own_fault_pct")
+    try:
+        own_fault_pct = float(own_fault_pct) if own_fault_pct not in (None, "") else None
+    except (TypeError, ValueError):
+        own_fault_pct = None
+
+    return {
+        "case_id": case_id, "line": "TPL", "retry_count": retry_count,
+        # ---- fairness_check（Tukey IQR）/ fraud_rules 用的結構化欄位 ----
+        # claim_amount 用 TPL Claim Agent 套用肇責比例「之後」的建議總額，
+        # 因為 judge-agent 是在核對「這個要核准的金額」是否公平合理，
+        # 不是核對套用肇責前的基礎金額。
+        "claim_amount": suggestion.get("total_suggested_amount"),
+        "own_fault_pct": own_fault_pct,
+        "other_fault_pct": (100 - own_fault_pct) if own_fault_pct is not None else None,
+        # 以下欄位 claim-intake 目前沒有對應的結構化資料來源，誠實留 null／[]，
+        # 讓 judge-agent 的 fraud_rules／fairness 顯式回報 na，不要用猜測值填充：
+        "injury_types": [],
+        "accident_cause": None,
+        "has_disability": None,
+        "disability_levels": [],
+        "coverage_limit": None,
+        "report_date": None,
+        "accident_date": submitted_fields.get("incident_date"),
+        "policy_effective_date": policy_fields.get("policy_period_start"),
+        "policy_expiry_date": policy_fields.get("policy_period_end"),
+        # ---- reasoning_review 用的欄位 ----
+        "reasoning": "\n".join(reasoning_parts) if reasoning_parts else None,
+        "cited_case_ids": sorted(cited_case_ids),
+        "cited_policy_ids": sorted(cited_policy_ids),
+        "claim_agent_confidence": suggestion.get("confidence"),
+        "retrieved_case_results": [
+            {"doc_id": c.get("case_no"), "text": c.get("summary")}
+            for c in (context.get("similar_cases") or []) if isinstance(c, dict)
+        ],
+        "retrieved_policy_results": [
+            {"doc_id": p.get("id"), "text": p.get("text")}
+            for p in (context.get("policy_clauses") or []) if isinstance(p, dict)
+        ],
+    }
 
 
 async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict):
@@ -253,9 +356,115 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
                       "description_parsed": parse_result,
                       "rsa_fields": rsa_fields,
                       "available_document_types": available_document_types}
-        result = await seams.submit_to_orchestrator_with_fallback(case_id, claim_data)
 
-        final_status = "escalated_human" if result.get("decision") == "escalate_human" else "completed"
+        # 2026-08 新增：第三人責任險（TPL）案件現在是三段式管線：
+        #   tpl-rules-agent-api（拒賠/理賠/資料不足/疑似詐欺 四選一把關）
+        #   → 只有「理賠」且未被標記需人工複核，才繼續往下走
+        #   tpl-claim-agent-api（金額建議）→ judge-agent（金額公平性/詐欺旗標/
+        #   審推理，拍板 execute/return_for_recalc/escalate_human）。
+        # 呼應 RSA 那邊 rule_agent 先篩、claim_agent 才算金額的門檻設計——
+        # 拒賠/資料不足/疑似詐欺不需要浪費一次金額計算，且「拒賠」跟「疑似
+        # 詐欺」這種結論性判斷本來就不該由 AI 自動拍板，一律轉人工。
+        # 兩條路徑最後都會落到本函式最下面共用的 store.update_status +
+        # notifier 那段，不在中途 return，確保轉人工的案件也會通知到申請人。
+        if insurance_type == "第三人責任險":
+            missing_tpl = [f for f in ("accident_area", "own_fault_pct", "injury_desc")
+                           if _blank(submitted_fields.get(f))]
+            if missing_tpl:
+                store.update_status(
+                    case_id, "escalated_human",
+                    error_message=f"第三人責任險案件缺少必要欄位：{', '.join(missing_tpl)}，需人工確認",
+                )
+                return
+
+            rules_client = seams.get_tpl_rules_agent_client()
+            case_description = _build_tpl_case_description(submitted_fields)
+            try:
+                rules_result = await rules_client.get_decision(case_description)
+            except Exception as e:
+                rules_result = {
+                    "simulated": True, "decision": "資料不足", "confidence": 0.0,
+                    "triggered_rules": [], "missing_data": [], "fraud_indicators": [],
+                    "evidence_cited": [], "citation_warnings": [], "needs_manual_review": True,
+                    "reasoning": f"TPL 規則代理人呼叫失敗，保守轉人工: {type(e).__name__}: {e}",
+                }
+
+            rules_decision = rules_result.get("decision")
+            # 「理賠」以外的三種結論（拒賠/資料不足/疑似詐欺），以及 Rules Agent
+            # 自己標記的 needs_manual_review，一律直接轉人工，不繼續叫金額代理人：
+            # 拒賠涉及最終結論、疑似詐欺涉及嫌疑指控，兩者都不該由 AI 自動拍板；
+            # 資料不足/needs_manual_review 則是案件本身還不到能算金額的程度。
+            if rules_decision != "理賠" or rules_result.get("needs_manual_review"):
+                reason_map = {
+                    "拒賠": "TPL 規則代理人判斷觸發拒賠規則，AI 不得自動拍板拒賠，轉人工複核",
+                    "資料不足": "TPL 規則代理人判斷資料不足，需補件或補充調查",
+                    "疑似詐欺": "TPL 規則代理人標記疑似詐欺指標，一律轉人工複核",
+                }
+                reasons = [reason_map.get(rules_decision, f"TPL 規則代理人判斷：{rules_decision}")]
+                if rules_result.get("missing_data"):
+                    reasons.append(f"缺漏項目：{', '.join(rules_result['missing_data'])}")
+                if rules_result.get("fraud_indicators"):
+                    reasons.append(f"詐欺指標：{', '.join(rules_result['fraud_indicators'])}")
+                if rules_result.get("citation_warnings"):
+                    reasons.append(f"規則代理人引用了不存在的證據編號：{', '.join(rules_result['citation_warnings'])}，判斷可信度存疑")
+                result = {
+                    "decision": "escalate_human", "next_agent": "human_review",
+                    "reasons": reasons, "confidence": rules_result.get("confidence", 0.0),
+                    "tpl_rules_agent_decision": rules_result,
+                }
+            else:
+                tpl_client = seams.get_tpl_claim_agent_client()
+                judge_client = seams.get_judge_agent_client()
+
+                # judge-agent 的 decision.py 在 decision=="return_for_recalc" 且
+                # retry_count < max_retries(judge-agent 端設定，預設2) 時會要求「退回
+                # 重算」，next_agent="claim_agent"——這裡最多重打 3 輪(retry_count
+                # 0/1/2)跟 judge-agent 預設的 max_retries=2 對齊。claim-intake 目前
+                # 沒有能力依 judge 的理由調整 TPL Claim Agent 的輸入去真正「重算」，
+                # 只能誠實地重新問一次；若三輪後仍是 return_for_recalc，就不再繼續
+                # 重試，讓下面的 final_status 邏輯把它視同需要人工介入。
+                judge_result, last_suggestion = None, None
+                for retry_count in range(3):
+                    try:
+                        last_suggestion = await tpl_client.get_suggestion(
+                            submitted_fields["accident_area"],
+                            float(submitted_fields["own_fault_pct"]),
+                            submitted_fields["injury_desc"],
+                        )
+                    except Exception as e:
+                        # 打不通(冷啟動/帳單暫停/尚未部署)就明確標記，轉人工，
+                        # 不讓整條背景任務因為 TPL agent 還沒就緒就整個失敗掛掉
+                        last_suggestion = {
+                            "simulated": True, "suggested_items": [],
+                            "total_suggested_amount": None, "confidence": None,
+                            "tpl_agent_error": f"{type(e).__name__}: {e}",
+                        }
+
+                    judge_case = _build_judge_case_from_tpl(
+                        case_id, submitted_fields, ocr_result, last_suggestion, retry_count
+                    )
+                    try:
+                        judge_result = await judge_client.judge(judge_case)
+                    except Exception as e:
+                        judge_result = {
+                            "simulated": True, "decision": "escalate_human", "next_agent": "human_review",
+                            "reasons": [f"法官代理人呼叫失敗，保守轉人工: {type(e).__name__}: {e}"],
+                            "confidence": 0.0,
+                        }
+                        break
+                    if judge_result.get("decision") != "return_for_recalc":
+                        break
+
+                result = {**judge_result, "tpl_rules_agent_decision": rules_result,
+                          "tpl_claim_agent_suggestion": last_suggestion}
+        else:
+            result = await seams.submit_to_orchestrator_with_fallback(case_id, claim_data)
+
+        # return_for_recalc 走到這裡代表上面的重試迴圈已經試過、仍然沒有拍板
+        # execute，claim-intake 沒有能力再自動重算，視同需要人工介入。
+        final_status = ("escalated_human"
+                         if result.get("decision") in ("escalate_human", "return_for_recalc")
+                         else "completed")
         store.update_status(case_id, final_status, pipeline_result=json.dumps(result, ensure_ascii=False))
 
         notifier = seams.get_notifier()

@@ -415,6 +415,241 @@ async def submit_to_orchestrator_with_fallback(case_id: str, claim_data: dict) -
 
 
 # ============================================================
+# 2.4 TPL 規則代理人（Lin423423/tpl-rules-agent-api）—— 在 TPL Claim Agent
+#     之前跑，做「拒賠／理賠／資料不足／疑似詐欺」四選一判斷，只有判為「理賠」
+#     且沒被標記 needs_manual_review 時，才值得繼續往下叫 TPL Claim Agent 算
+#     金額（呼應 RSA 那邊 rule_agent→claim_agent 先篩再算的門檻設計，省掉
+#     明顯該轉人工的案件的金額計算成本）。
+#     這支服務跟 TPL Claim Agent 共用同一個 GCP 專案/GraphRAG API，部署時
+#     一樣沒開 --allow-unauthenticated，所以也要「ID token 過 IAM + X-API-Key
+#     過應用層」雙重驗證，跟 TplClaimAgentClient 同樣的模式。
+#     輸入格式跟 TPL Claim Agent 不同：這支吃一段自由文字 case_description，
+#     不是結構化的 accident_area/own_fault_pct/injury_desc，claim-intake 要
+#     自己把表單欄位組成一段敘述文字（見 main.py 的 _build_tpl_case_description）。
+# ============================================================
+class TplRulesAgentClient(ABC):
+    @abstractmethod
+    async def get_decision(self, case_description: str) -> dict:
+        """回傳 TPL Rules Agent 原始結果 dict（decision/confidence/triggered_rules/
+        reasoning/missing_data/fraud_indicators/evidence_cited/citation_warnings/
+        needs_manual_review），或樁版本標記 simulated=True 的保守佔位結果。"""
+        ...
+
+
+class SimulatedTplRulesAgentClient(TplRulesAgentClient):
+    """TPL_RULES_AGENT_URL 還沒設定/服務還沒部署時的樁。規則判斷這種會決定
+    案件生死的事沒有真實服務把關時，保守回報「資料不足」＋需人工複核，
+    不猜「理賠」讓案件誤放行去算金額。"""
+
+    async def get_decision(self, case_description: str) -> dict:
+        return {
+            "simulated": True,
+            "decision": "資料不足",
+            "confidence": 0.0,
+            "triggered_rules": [],
+            "reasoning": "TPL_RULES_AGENT_URL 尚未設定，此為樁，非真實規則代理人判斷。",
+            "missing_data": ["TPL_RULES_AGENT_URL 尚未設定"],
+            "fraud_indicators": [],
+            "evidence_cited": [],
+            "citation_warnings": [],
+            "needs_manual_review": True,
+        }
+
+
+class HTTPTplRulesAgentClient(TplRulesAgentClient):
+    """timeout 拉長邏輯跟 HTTPTplClaimAgentClient 一樣：兩支服務用同一顆 LoRA
+    量化模型架構，冷啟動時間量級相同，保守抓 8 分鐘。"""
+
+    def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 480.0):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    async def _get_id_token(self) -> str | None:
+        try:
+            import google.auth.transport.requests
+            import google.oauth2.id_token
+            request = google.auth.transport.requests.Request()
+            return google.oauth2.id_token.fetch_id_token(request, self.base_url)
+        except Exception:
+            return None
+
+    async def get_decision(self, case_description: str) -> dict:
+        headers = {"X-API-Key": self.api_key} if self.api_key else {}
+        token = await self._get_id_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/v1/tpl/rules",
+                json={"case_description": case_description},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            result["simulated"] = False
+            return result
+
+
+def get_tpl_rules_agent_client() -> TplRulesAgentClient:
+    base_url = os.environ.get("TPL_RULES_AGENT_URL")
+    api_key = os.environ.get("TPL_RULES_AGENT_API_KEY")
+    if base_url:
+        return HTTPTplRulesAgentClient(base_url, api_key)
+    return SimulatedTplRulesAgentClient()
+
+
+# ============================================================
+# 2.5 TPL 理賠代理人（Lin423423/tpl-claim-agent-api）—— 只服務「第三人責任險」
+#     案件，回傳的是金額建議 + confidence，不是 execute/escalate_human 這種
+#     決策，所以不能直接套進上面 OrchestratorClient 的合約，另外開一個 SEAM。
+#     這支服務部署時沒開 --allow-unauthenticated，Cloud Run IAM 層跟服務內部
+#     的 X-API-Key 驗證是兩道分開的關卡，呼叫時兩個都要帶，缺一個都會被擋。
+# ============================================================
+class TplClaimAgentClient(ABC):
+    @abstractmethod
+    async def get_suggestion(self, accident_area: str, own_fault_pct: float, injury_desc: str) -> dict:
+        """回傳 TPL Claim Agent 的原始結果 dict（suggested_items/total_suggested_amount/
+        confidence），或樁版本標記 simulated=True 的佔位結果。這一層只負責「問到了什麼」，
+        不負責把結果轉成 execute/escalate_human/return_for_recalc——那是 judge-agent
+        的工作（見 JudgeAgentClient），職責分開避免這裡混雜業務判斷。"""
+        ...
+
+
+class SimulatedTplClaimAgentClient(TplClaimAgentClient):
+    """TPL_CLAIM_AGENT_URL 還沒設定/服務還沒部署時的樁。誠實回報「尚未執行」，
+    不虛構任何金額建議或信心度，避免測試者誤以為已經有真實的 RAG 檢索結果。"""
+
+    async def get_suggestion(self, accident_area: str, own_fault_pct: float, injury_desc: str) -> dict:
+        return {
+            "simulated": True,
+            "suggested_items": [],
+            "total_suggested_amount": None,
+            "confidence": None,
+            "note": "TPL_CLAIM_AGENT_URL 尚未設定，此為樁，非真實金額建議。",
+        }
+
+
+class HTTPTplClaimAgentClient(TplClaimAgentClient):
+    """真的去打 tpl-claim-agent-api 的 /v1/tpl/claim。timeout 刻意拉長到 8 分鐘：
+    該服務冷啟動實測約 7 分鐘（LoRA 4-bit 量化模型載入），demo 前建議另外對該服務
+    設定 --min-instances=1 降低冷啟動機率，但 client 端仍保留寬鬆 timeout 當保險。
+    打不通時明確拋出例外，不偽裝成功，由呼叫端（main.py）決定要不要轉人工。"""
+
+    def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 480.0):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    async def _get_id_token(self) -> str | None:
+        """跟 HTTPOrchestratorClient 一樣：Cloud Run 服務間呼叫需要用目標服務網址
+        當 audience 換一張 Google 簽發的 ID token，否則會被 Cloud Run IAM 層擋在
+        門口（連 X-API-Key 驗證都進不去）。本機或非 GCP 環境跑不出 token 是正常的，
+        回傳 None、讓呼叫端照舊只帶 X-API-Key（適用本機測試 tpl-claim-agent-api
+        時該服務若暫時開放未驗證存取的情境）。"""
+        try:
+            import google.auth.transport.requests
+            import google.oauth2.id_token
+            request = google.auth.transport.requests.Request()
+            return google.oauth2.id_token.fetch_id_token(request, self.base_url)
+        except Exception:
+            return None
+
+    async def get_suggestion(self, accident_area: str, own_fault_pct: float, injury_desc: str) -> dict:
+        headers = {"X-API-Key": self.api_key} if self.api_key else {}
+        token = await self._get_id_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/v1/tpl/claim",
+                json={
+                    "accident_area": accident_area,
+                    "own_fault_pct": own_fault_pct,
+                    "injury_desc": injury_desc,
+                },
+                headers=headers,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            result["simulated"] = False
+            return result
+
+
+def get_tpl_claim_agent_client() -> TplClaimAgentClient:
+    base_url = os.environ.get("TPL_CLAIM_AGENT_URL")
+    api_key = os.environ.get("TPL_CLAIM_AGENT_API_KEY")
+    if base_url:
+        return HTTPTplClaimAgentClient(base_url, api_key)
+    return SimulatedTplClaimAgentClient()
+
+
+# ============================================================
+# 2.6 法官代理人（HsiaoHsiao0627/judge-agent）—— 內部服務，只做金額公平性
+#     (Tukey IQR)、詐欺旗標(A/B/C/D)、審推理，回傳 execute/return_for_recalc/
+#     escalate_human。這支服務部署時沒開 --allow-unauthenticated、也沒有
+#     X-API-Key 這層驗證，只靠 Cloud Run IAM Invoker 擋，所以呼叫時只需要
+#     帶 ID token，不用像 TPL Claim Agent 那樣額外帶 API Key。
+# ============================================================
+class JudgeAgentClient(ABC):
+    @abstractmethod
+    async def judge(self, case: dict) -> dict:
+        """case 必須是跟 judge-agent 的 TPLValCaseLoader.load()/RSAValCaseLoader.load()
+        相同形狀的 dict（見 main.py 的 _build_judge_case_from_tpl()）。回傳 judge-agent
+        的完整輸出（decision/next_agent/reasons/fairness_check/fraud_flags/...），
+        或樁版本標記 simulated=True 的保守佔位結果（一律 escalate_human，不猜放行）。"""
+        ...
+
+
+class SimulatedJudgeAgentClient(JudgeAgentClient):
+    """JUDGE_AGENT_URL 還沒設定/服務還沒部署時的樁。金額判斷這種事沒有真實
+    法官代理人把關時，保守起見一律轉人工，不能因為服務沒接上就悄悄放行。"""
+
+    async def judge(self, case: dict) -> dict:
+        return {
+            "simulated": True,
+            "case_id": case.get("case_id"), "line": case.get("line"),
+            "decision": "escalate_human", "next_agent": "human_review",
+            "reasons": ["JUDGE_AGENT_URL 尚未設定，此為樁，非真實法官代理人判斷，保守轉人工"],
+            "confidence": 0.0,
+        }
+
+
+class HTTPJudgeAgentClient(JudgeAgentClient):
+    def __init__(self, base_url: str, timeout: float = 30.0):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    async def _get_id_token(self) -> str | None:
+        try:
+            import google.auth.transport.requests
+            import google.oauth2.id_token
+            request = google.auth.transport.requests.Request()
+            return google.oauth2.id_token.fetch_id_token(request, self.base_url)
+        except Exception:
+            return None
+
+    async def judge(self, case: dict) -> dict:
+        headers = {}
+        token = await self._get_id_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(f"{self.base_url}/v1/judge", json=case, headers=headers)
+            resp.raise_for_status()
+            result = resp.json()
+            result["simulated"] = False
+            return result
+
+
+def get_judge_agent_client() -> JudgeAgentClient:
+    base_url = os.environ.get("JUDGE_AGENT_URL")
+    if base_url:
+        return HTTPJudgeAgentClient(base_url)
+    return SimulatedJudgeAgentClient()
+
+
+# ============================================================
 # 3. 通知（email/簡訊現在；LINE 推播之後）
 # ============================================================
 class Notifier(ABC):
