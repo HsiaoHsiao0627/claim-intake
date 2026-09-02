@@ -275,6 +275,14 @@ function initClaimPage({ demoCases = [] } = {}) {
       return;
     }
 
+    // 2026-08 新增：第三人責任險案件要呼叫 TPL Claim Agent，accident_area／
+    // own_fault_pct／injury_desc 是它的必填參數（尤其 own_fault_pct 攸關理賠
+    // 金額計算）。這裡刻意不在前端強制擋——責任比例爭議未定是理賠案件的
+    // 正常情況之一（保戶當下可能真的不知道），跟 policy_no/claim_amount
+    // 那種「有文件可以補」的必填不同，這三個欄位沒有文件可以自動帶入。
+    // 留空一樣讓案件送出，由後端已有的「缺必要欄位→轉人工」邏輯誠實處理，
+    // 不要在前端就把案件擋下來，這樣才符合本專案的一貫原則。
+
     const btn = document.getElementById("submitBtn");
     btn.disabled = true; btn.textContent = "送出中…";
 

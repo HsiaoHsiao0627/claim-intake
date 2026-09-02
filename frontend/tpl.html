@@ -215,8 +215,25 @@
         <input id="incident_date" name="incident_date" type="date">
       </div>
 
+      <div class="row2">
+        <div class="field">
+          <label for="accident_area">事故地區（未填寫將轉人工複核）</label>
+          <input id="accident_area" name="accident_area" placeholder="例如 台北市">
+        </div>
+        <div class="field">
+          <label for="own_fault_pct">本車肇責比例 %（未填寫將轉人工複核；責任比例尚有爭議可先留空）</label>
+          <input id="own_fault_pct" name="own_fault_pct" type="number" min="0" max="100" step="1"
+                 placeholder="例如 70">
+        </div>
+      </div>
+
       <div class="field">
-        <label for="description">事故簡述（請說明事故經過、雙方責任歸屬、對方受傷或財損情形等）</label>
+        <label for="injury_desc">傷勢描述（未填寫將轉人工複核；請具體說明受傷部位、程度、就醫情形，若無人員受傷可填「無」）</label>
+        <textarea id="injury_desc" name="injury_desc" rows="3" placeholder="例如：事故造成右腳踝骨折，已於某某醫院就醫治療"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="description">事故簡述（選填，請說明事故經過、雙方責任歸屬、對方受傷或財損情形等）</label>
         <textarea id="description" name="description" rows="3" placeholder="請簡述事故經過"></textarea>
       </div>
 
@@ -303,6 +320,8 @@ const DEMO_CASES = [
       policy_no: "POL-2026-70012", applicant_name: "許家豪",
       insurance_type: "第三人責任險",
       claim_amount: "35000", incident_date: "2026-07-18",
+      accident_area: "台北市", own_fault_pct: "0",
+      injury_desc: "本次事故僅造成對方車輛及本車車損，雙方均無人員受傷。",
       description: "自用小客車於路口停等紅燈時遭後方車輛追撞，經現場員警到場處理，判定對方負全部肇事責任，本次申請對方車損及本車維修費用理賠，已檢附診斷證明、維修估價單及道路交通事故初步分析研判表。",
       contact_email: "chiahao.hsu@example.com", contact_phone: "0910-234-567"
     }
@@ -318,6 +337,8 @@ const DEMO_CASES = [
       policy_no: "POL-2026-70255", applicant_name: "游雅雯",
       insurance_type: "第三人責任險",
       claim_amount: "12000", incident_date: "2026-07-21",
+      accident_area: "新北市", own_fault_pct: "20",
+      injury_desc: "右手臂輕微擦挫傷，已至醫院急診包紮處理，無需住院。",
       description: "騎乘機車於巷口與對方汽車發生碰撞，本方輕微擦挫傷，已至醫院急診並取得診斷證明，雙方已達成責任歸屬共識，對方負主要責任，本次申請醫療費用及機車損壞理賠。",
       contact_email: "yawen.you@example.com", contact_phone: "0921-345-678"
     }
@@ -333,6 +354,8 @@ const DEMO_CASES = [
       policy_no: "POL-2026-71100", applicant_name: "邱冠廷",
       insurance_type: "第三人責任險",
       claim_amount: "680000", incident_date: "2026-06-30",
+      accident_area: "台中市", own_fault_pct: "0",
+      injury_desc: "本車駕駛左小腿粉碎性骨折，已住院手術並持續復健治療中。",
       description: "自用小客車遭對方闖紅燈撞擊，本方駕駛骨折需住院手術及後續復健，已檢附完整診斷證明、住院及手術費用收據，對方保險公司已初步確認負全部肇事責任，因傷勢嚴重理賠金額明顯高於一般案件。",
       contact_email: "kuanting.chiu@example.com", contact_phone: "0932-456-789"
     }
@@ -348,6 +371,10 @@ const DEMO_CASES = [
       policy_no: "POL-2026-71344", applicant_name: "蔡沛珊",
       insurance_type: "第三人責任險",
       claim_amount: "150000", incident_date: "2026-07-05",
+      accident_area: "高雄市",
+      // 刻意不帶 own_fault_pct：警方尚未研判責任比例，示範「必要欄位缺漏
+      // →轉人工」的路徑，而不是猜一個比例出來。
+      injury_desc: "本車駕駛頸部與腰部挫傷，已就醫檢查，後續是否需進一步治療待觀察。",
       description: "自用小客車與對方車輛於無號誌路口發生碰撞，雙方對肇事責任比例看法不一，警方尚未做出最終研判結果，本次先行提出理賠申請，待責任比例確認後再行核算，目前申請金額為估計金額。",
       contact_email: "peishan.tsai@example.com", contact_phone: "0955-567-890"
     }
@@ -363,6 +390,8 @@ const DEMO_CASES = [
       policy_no: "POL-2026-72011", applicant_name: "羅思婷",
       insurance_type: "第三人責任險",
       claim_amount: "20000", incident_date: "2026-07-12",
+      accident_area: "台南市", own_fault_pct: "50",
+      injury_desc: "對方好像有受傷，詳細情形不清楚。",
       description: "跟別人的車擦撞，對方受傷，麻煩幫忙處理理賠，謝謝。",
       contact_email: "sitting.luo@example.com", contact_phone: "0966-678-901"
     }
@@ -377,6 +406,8 @@ const DEMO_CASES = [
       policy_no: "POL-2026-72288", applicant_name: "洪振宇",
       insurance_type: "第三人責任險",
       claim_amount: "45000", incident_date: "2026-07-15",
+      accident_area: "桃園市", own_fault_pct: "70",
+      injury_desc: "對方騎士右膝擦挫傷，已送醫檢查，尚未取得完整診斷證明。",
       description: "自用小客車變換車道時與對方機車發生碰撞，對方輕微受傷送醫，已與對方協調理賠事宜，尚未取得完整診斷證明與維修估價單，先行提出申請。",
       contact_email: "chenyu.hung@example.com", contact_phone: "0977-789-012"
     }
