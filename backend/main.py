@@ -253,6 +253,7 @@ def _build_judge_case_from_tpl(case_id: str, submitted_fields: dict, ocr_result:
 
 async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict):
     try:
+        insurance_type = submitted_fields.get("insurance_type")
         store.update_status(case_id, "ocr_processing")
         ocr = seams.get_ocr_extractor()
         ocr_result = await ocr.extract(file_paths.get("policy", []), file_paths.get("evidence", []))
