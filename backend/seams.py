@@ -342,7 +342,14 @@ class HTTPOrchestratorClient(OrchestratorClient):
     """真的去打協調層 API。若打不通(帳單暫停/尚未部署)，明確回報連線失敗，
     不偽裝成功——呼叫端會依此決定要不要落到模擬結果。"""
 
-    def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 30.0):
+    def __init__(self, base_url: str, api_key: str | None = None, timeout: float = 120.0):
+        # 2026-09 修正：協調層（目前指向 rsa-rule-agent）內部是 RAG -> Rule Engine
+        # -> Gemini Advisory -> Claim Agent(自帶最多 30 秒逾時) -> Judge Agent
+        # (自帶最多 25 秒逾時) 的循序鏈路，光是後兩步的逾時預算加起來就有機會
+        # 超過舊的 30 秒，還沒算前面 Gemini 呼叫跟服務冷啟動的時間。這裡的
+        # submit() 是在背景任務 _process_claim() 裡跑的，不會卡住保戶當下的
+        # HTTP 請求，所以把逾時拉長換取「真的等到協調層算完」是划算的；
+        # 可用 ORCHESTRATOR_TIMEOUT_SECONDS 環境變數覆寫，方便之後依實測調整。
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
@@ -396,7 +403,12 @@ def get_orchestrator_client() -> OrchestratorClient:
     base_url = os.environ.get("ORCHESTRATOR_URL")
     api_key = os.environ.get("ORCHESTRATOR_API_KEY")
     if base_url:
-        return HTTPOrchestratorClient(base_url, api_key)
+        timeout_raw = os.environ.get("ORCHESTRATOR_TIMEOUT_SECONDS")
+        try:
+            timeout = float(timeout_raw) if timeout_raw else 120.0
+        except ValueError:
+            timeout = 120.0
+        return HTTPOrchestratorClient(base_url, api_key, timeout=timeout)
     return SimulatedOrchestratorClient()
 
 
