@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>理賠案件登錄（理賠人員）</title>
+<style>
+  :root {
+    --ink: #16232e; --ink-soft: #4a5b68; --line: #d8dee2; --surface: #ffffff;
+    --page: #f3f6f7; --accent: #0f5c56; --accent-soft: #e3efed;
+    --warn-bg: #fdf3e3; --warn-ink: #7a4a06; --err-bg: #fbeaea; --err-ink: #8a2c22;
+    --chip: #eef1f2;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font-family: -apple-system, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif; line-height: 1.6; }
+  a { color: var(--accent); }
+  .hidden { display: none !important; }
+
+  /* 頁首＋險種分頁 */
+  .topbar { max-width: 1120px; margin: 0 auto; padding: 28px 20px 0; }
+  .mode-badge { display: inline-block; font-size: 12px; background: var(--accent-soft); color: var(--accent); padding: 4px 10px; border-radius: 999px; margin-bottom: 8px; font-weight: 600; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .topbar p { color: var(--ink-soft); margin: 0; font-size: 14px; }
+  .tabs { display: flex; gap: 4px; margin-top: 18px; border-bottom: 1px solid var(--line); }
+  .tab { border: 1px solid transparent; border-bottom: none; background: transparent; padding: 10px 18px; font-size: 15px; font-family: inherit; color: var(--ink-soft); cursor: pointer; border-radius: 10px 10px 0 0; margin-bottom: -1px; }
+  .tab[aria-selected="true"] { background: var(--surface); border-color: var(--line); color: var(--ink); font-weight: 600; }
+
+  .page-layout { max-width: 1120px; margin: 0 auto; padding: 24px 20px 20px; display: flex; align-items: flex-start; gap: 24px; }
+  .shell { flex: 1 1 auto; min-width: 0; max-width: 760px; }
+
+  /* demo 側欄（沿用 rsa.html／tpl.html 樣式） */
+  .demo-sidebar { width: 260px; flex: 0 0 260px; position: sticky; top: 24px; }
+  .demo-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .demo-card .demo-badge { display: inline-block; font-size: 11px; background: var(--accent-soft); color: var(--accent); padding: 3px 9px; border-radius: 999px; margin-bottom: 10px; font-weight: 600; }
+  .demo-card h2 { font-size: 15px; margin: 0 0 6px; }
+  .demo-card .demo-hint { font-size: 12px; color: var(--ink-soft); margin: 0 0 14px; }
+  .demo-list { display: flex; flex-direction: column; gap: 8px; }
+  .demo-item { display: block; width: 100%; text-align: left; cursor: pointer; background: var(--page); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-family: inherit; color: var(--ink); }
+  .demo-item:hover { border-color: var(--accent); }
+  .demo-item.active { border-color: var(--accent); background: var(--accent-soft); }
+  .demo-item .demo-item-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .demo-item .demo-item-desc { font-size: 11.5px; color: var(--ink-soft); line-height: 1.4; }
+  .demo-tag { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 999px; margin-bottom: 6px; }
+  .demo-tag.approve { background: var(--accent-soft); color: var(--accent); }
+  .demo-tag.review { background: var(--warn-bg); color: var(--warn-ink); }
+  .demo-tag.incomplete { background: var(--err-bg); color: var(--err-ink); }
+  .demo-reset { width: 100%; margin-top: 12px; padding: 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft); font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  @media (max-width: 900px) { .page-layout { flex-direction: column; } .demo-sidebar { width: 100%; flex: 1 1 auto; position: static; } }
+
+  /* 卡片與欄位 */
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px 8px; margin-bottom: 16px; }
+  .card > h3 { font-size: 15px; margin: 0 0 16px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .card > h3 small { font-weight: 400; font-size: 12px; color: var(--ink-soft); margin-left: 8px; }
+  .field { margin-bottom: 16px; }
+  .field label, .field .label { display: block; font-size: 13px; font-weight: 600; color: var(--ink-soft); margin-bottom: 6px; }
+  .req { color: var(--err-ink); margin-left: 2px; }
+  .opt { font-weight: 400; font-size: 12px; color: var(--ink-soft); margin-left: 4px; }
+  .field input, .field select, .field textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 15px; font-family: inherit; color: var(--ink); background: var(--surface); }
+  .field input:focus, .field select:focus, .field textarea:focus, .ms-trigger:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .field.invalid input, .field.invalid .ms-trigger { border-color: var(--err-ink); }
+  .hint { font-size: 12px; color: var(--ink-soft); margin-top: 5px; }
+  .msg { font-size: 12.5px; margin: -6px 0 14px; border-radius: 6px; padding: 6px 10px; display: none; }
+  .msg.show { display: block; }
+  .msg.err { background: var(--err-bg); color: var(--err-ink); }
+  .msg.warn { background: var(--warn-bg); color: var(--warn-ink); }
+  .msg.ok { background: var(--accent-soft); color: var(--accent); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media (max-width: 560px) { .row2, .row3 { grid-template-columns: 1fr; } }
+  .upload-zone { border: 1.5px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center; color: var(--ink-soft); font-size: 14px; cursor: pointer; background: var(--page); }
+  .upload-zone.dragover { border-color: var(--accent); background: var(--accent-soft); }
+  .file-list, #policyFileList, #fileList { margin-top: 8px; font-size: 13px; color: var(--ink-soft); }
+  .parsed { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .parsed span { font-size: 12px; background: var(--chip); border-radius: 999px; padding: 3px 10px; color: var(--ink-soft); }
+  .parsed span b { color: var(--ink); font-weight: 600; }
+
+  /* 處理情形多選 */
+  .ms { position: relative; }
+  .ms-trigger { width: 100%; min-height: 46px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 38px 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; text-align: left; font-family: inherit; color: var(--ink); position: relative; }
+  .ms-trigger::after { content: "▾"; position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--ink-soft); }
+  .ms-placeholder { color: var(--ink-soft); font-size: 15px; padding-left: 4px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 6px 3px 4px; font-size: 13.5px; font-weight: 600; }
+  .chip .ord { background: var(--accent); color: #fff; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+  .chip button { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+  .ms-panel { display: none; position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 6px); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; box-shadow: 0 12px 28px rgba(10,30,40,.16); max-height: 420px; overflow-y: auto; }
+  .ms.open .ms-panel { display: block; }
+  .ms-group { margin-bottom: 10px; }
+  .ms-group h4 { font-size: 12px; margin: 0 0 6px; color: var(--ink-soft); font-weight: 600; }
+  .ms-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ms-opt { border: 1px solid var(--line); background: var(--page); color: var(--ink); border-radius: 8px; padding: 6px 10px; font-size: 13.5px; cursor: pointer; font-family: inherit; }
+  .ms-opt:hover { border-color: var(--accent); }
+  .ms-opt[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ms-opt:disabled { opacity: .4; cursor: not-allowed; }
+  .ms-other { display: flex; gap: 8px; }
+  .ms-other input { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; font-family: inherit; }
+  .ms-other button { border: 1px solid var(--accent); background: var(--surface); color: var(--accent); border-radius: 8px; padding: 0 14px; cursor: pointer; font-family: inherit; font-weight: 600; }
+  .ms-foot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--ink-soft); border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
+  .ms-foot button { border: none; background: var(--accent); color: #fff; border-radius: 6px; padding: 5px 14px; cursor: pointer; font-family: inherit; }
+  .derived { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; color: var(--ink-soft); flex-wrap: wrap; }
+  .cls { font-weight: 700; border-radius: 6px; padding: 3px 10px; font-size: 13px; }
+  .cls.tow { background: var(--accent-soft); color: var(--accent); }
+  .cls.fix { background: #e6eefb; color: #1f4f9a; }
+  .cls.spc { background: var(--warn-bg); color: var(--warn-ink); }
+  .cls.empty { background: var(--chip); color: var(--ink-soft); }
+  .cls.none { background: var(--err-bg); color: var(--err-ink); }
+
+  /* 錯誤／送出／預覽／受理 */
+  .errbox { background: var(--err-bg); color: var(--err-ink); border-radius: 10px; padding: 12px 16px; font-size: 13.5px; margin-bottom: 16px; display: none; }
+  .errbox ul { margin: 6px 0 0; padding-left: 20px; }
+  button.primary { width: 100%; padding: 13px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  button.primary:disabled { opacity: .55; cursor: not-allowed; }
+  button.primary:hover:not(:disabled) { background: #0c4a45; }
+  .pv-table-wrap { overflow-x: auto; }
+  .pv-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .pv-table th, .pv-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .pv-table th { color: var(--ink-soft); font-weight: 600; white-space: nowrap; width: 38%; }
+  .pv-table td.null { color: var(--ink-soft); font-style: italic; }
+  .pv-table tr.sec th { background: var(--page); color: var(--ink); font-size: 12.5px; }
+  .pv-note { font-size: 12.5px; color: var(--ink-soft); margin: 12px 0 0; }
+  .btn-row { display: flex; gap: 10px; margin: 16px 0 12px; }
+  .btn-row button { flex: 1; }
+  .btn-ghost { padding: 13px; border-radius: 10px; font-family: inherit; font-size: 15px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .confirm { text-align: center; padding: 12px 4px 20px; }
+  .confirm .check { width: 52px; height: 52px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 26px; margin: 0 auto 16px; }
+  .confirm h2 { font-size: 19px; margin: 0 0 8px; }
+  .confirm p { color: var(--ink-soft); font-size: 14px; margin: 0 0 4px; }
+  .caseid { display: inline-block; margin-top: 14px; padding: 8px 14px; background: var(--page); border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, monospace; font-size: 14px; }
+
+  /* 案件查詢（兩個分頁共用） */
+  .lookup-wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px 80px; }
+  .lookup-inner { max-width: 760px; margin-left: 284px; }
+  @media (max-width: 900px) { .lookup-inner { margin-left: 0; } }
+  .divider { border-top: 1px solid var(--line); margin: 16px 0 16px; }
+  .test-note { font-size: 12px; color: var(--ink-soft); margin-bottom: 10px; }
+  .lookup-card { padding-bottom: 22px; }
+  #statusResult { font-size: 13.5px; margin-top: 12px; line-height: 1.75; background: var(--page); border-radius: 8px; padding: 14px 16px; display: none; }
+  #statusResult .claim-summary-row { margin-bottom: 4px; }
+  #statusResult .claim-summary-decision { margin-top: 10px; padding: 10px 12px; border-radius: 8px; line-height: 1.6; }
+  #statusResult .claim-summary-approve { background: var(--accent-soft); color: var(--accent); }
+  #statusResult .claim-summary-review { background: var(--warn-bg); color: var(--warn-ink); }
+  #statusResult .claim-summary-error { background: var(--err-bg); color: var(--err-ink); }
+  #statusResult .claim-summary-pending { background: #eef1f2; color: var(--ink-soft); }
+  #statusResult .claim-summary-raw { margin-top: 12px; font-size: 12px; color: var(--ink-soft); cursor: pointer; }
+  #statusResult .claim-summary-raw pre { white-space: pre-wrap; word-break: break-all; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-top: 6px; cursor: text; font-size: 11.5px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="mode-badge">理賠人員模式</span>
+  <h1>理賠案件登錄</h1>
+  <p><a href="/">← 回選擇頁</a>　｜　<a href="/admin.html">案件管理後台</a></p>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-rsa" data-tab="rsa" aria-controls="panel-rsa">道路救援 RSA</button>
+    <button class="tab" role="tab" id="tab-tpl" data-tab="tpl" aria-controls="panel-tpl">第三人責任險 TPL</button>
+  </div>
+</div>
+
+<!-- ======================================================== -->
+<!-- RSA：理賠人員登錄（欄位對齊 RSA Excel）                     -->
+<!-- ======================================================== -->
+<div id="panel-rsa" role="tabpanel" aria-labelledby="tab-rsa">
+<div class="page-layout">
+  <aside class="demo-sidebar">
+    <div class="demo-card">
+      <span class="demo-badge">Demo 專用・僅供展示</span>
+      <h2>案例代入</h2>
+      <p class="demo-hint">點選案例會自動填入欄位（內容暫定，之後再調整）。</p>
+      <div class="demo-list" id="rsaDemoList"></div>
+      <button type="button" class="demo-reset" id="rsaDemoReset">清空表單</button>
+    </div>
+  </aside>
+
+  <div class="shell">
+    <div class="errbox" id="rsaErrBox"></div>
+
+    <form id="rsaForm" novalidate>
+      <section class="card">
+        <h3>報修資訊</h3>
+        <div class="row3">
+          <div class="field" data-f="report_date">
+            <label for="rsa_report_date">報修日期<span class="req">*</span></label>
+            <input id="rsa_report_date" type="date">
+          </div>
+          <div class="field" data-f="report_time">
+            <label for="rsa_report_time">報修時間<span class="req">*</span></label>
+            <input id="rsa_report_time" type="time">
+          </div>
+          <div class="field" data-f="report_no">
+            <label for="rsa_report_no">報修單號<span class="req">*</span></label>
+            <input id="rsa_report_no" inputmode="numeric" maxlength="20" placeholder="例如 9607849" autocomplete="off">
+          </div>
+        </div>
+        <div class="msg" id="rsaReportNoMsg"></div>
+      </section>
+
+      <section class="card">
+        <h3>保單與專案<small>上傳保單照片可自動帶入保單號碼</small></h3>
+        <div class="field">
+          <span class="label">保單照片<span class="opt">選填</span></span>
+          <div class="upload-zone" id="rsaPolicyZone">點擊選擇檔案，或將保單照片拖曳到這裡
+            <input type="file" id="rsaPolicyInput" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none">
+          </div>
+          <div class="file-list" id="rsaPolicyList"></div>
+        </div>
+        <div class="row2">
+          <div class="field" data-f="policy_no">
+            <label for="rsa_policy_no">保單號碼<span class="req">*</span></label>
+            <input id="rsa_policy_no" placeholder="未上傳保單照片時必填">
+          </div>
+          <div class="field">
+            <label for="rsa_policy_active">保單於事故當下是否有效</label>
+            <select id="rsa_policy_active">
+              <option value="">未確認／不確定</option>
+              <option value="是">是，事故當下保單有效</option>
+              <option value="否">否，保單已過期或未生效</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" data-f="project_name">
+          <label for="rsa_project_name">專案名稱<span class="req">*</span></label>
+          <input id="rsa_project_name" list="rsaProjectOptions" placeholder="點選常見專案，或直接輸入" autocomplete="off">
+          <datalist id="rsaProjectOptions">
+            <option value="自費購道援險(30,000元,60K,3次)">
+            <option value="自費購道援險(50,000元,不限K次)">
+            <option value="自費購道援險(10,000元,20K,3次)">
+            <option value="福斯保代自費購道援險(30,000元)">
+          </datalist>
+          <div class="parsed" id="rsaProjectParsed"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>車輛與駕駛人</h3>
+        <div class="row3">
+          <div class="field" data-f="plate_no">
+            <label for="rsa_plate_no">車號<span class="req">*</span></label>
+            <input id="rsa_plate_no" placeholder="例如 ABC-1234" autocomplete="off">
+          </div>
+          <div class="field" data-f="driver_id">
+            <label for="rsa_driver_id">駕駛人 ID<span class="opt">選填</span></label>
+            <input id="rsa_driver_id" maxlength="10" placeholder="身分證或居留證號" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="rsa_driver_name">駕駛人姓名<span class="opt">選填</span></label>
+            <input id="rsa_driver_name" autocomplete="off">
+          </div>
+        </div>
+        <div class="msg" id="rsaDriverIdMsg"></div>
+      </section>
+
+      <section class="card">
+        <h3>事故與處理</h3>
+        <div class="row2">
+          <div class="field" data-f="incident_date">
+            <label for="rsa_incident_date">事故日期<span class="req">*</span></label>
+            <input id="rsa_incident_date" type="date">
+            <div class="hint">預設帶入報修日期，可修改</div>
+          </div>
+          <div class="field">
+            <label for="rsa_accident_km">事故公里數<span class="opt">選填</span></label>
+            <input id="rsa_accident_km" type="number" min="0" step="1" placeholder="拖吊里程，急修通常填 0">
+          </div>
+        </div>
+        <div class="field">
+          <label for="rsa_fault_location">故障地點<span class="opt">選填</span></label>
+          <input id="rsa_fault_location" placeholder="例如 台北市士林區士商路123號">
+        </div>
+        <div class="field">
+          <label for="rsa_tow_destination">拖吊目的地<span class="opt">選填</span></label>
+          <input id="rsa_tow_destination" placeholder="例如 私人廠//大義街16號">
+        </div>
+        <div class="field" data-f="handling">
+          <span class="label" id="rsaHandlingLabel">處理情形<span class="req">*</span><span class="opt">依發生順序點選，最多 3 項，對應處理情形一／二／三</span></span>
+          <div class="ms" id="rsaMs">
+            <button type="button" class="ms-trigger" id="rsaMsTrigger" aria-haspopup="true" aria-expanded="false" aria-labelledby="rsaHandlingLabel">
+              <span class="ms-placeholder" id="rsaMsPlaceholder">請選擇處理情形</span>
+            </button>
+            <div class="ms-panel" id="rsaMsPanel" role="dialog" aria-label="選擇處理情形"></div>
+          </div>
+          <div class="derived">處理歸類（系統自動判斷）<span class="cls empty" id="rsaClsBadge">尚未選擇</span></div>
+        </div>
+        <div class="field" data-f="claim_amount">
+          <label for="rsa_claim_amount">申請理賠金額 (NT$)<span class="req">*</span></label>
+          <input id="rsa_claim_amount" type="number" min="0" step="1" placeholder="例如 2800">
+        </div>
+        <div class="field">
+          <label for="rsa_description">事故簡述<span class="opt">選填</span></label>
+          <textarea id="rsa_description" rows="3" placeholder="補充說明現場狀況、特殊作業原因等"></textarea>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>佐證文件<small>選填，支援 PDF / PNG / JPG</small></h3>
+        <div class="field">
+          <div class="upload-zone" id="rsaEvZone">救援派工單、收據等，點擊選擇或拖曳到這裡
+            <input type="file" id="rsaEvInput" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none">
+          </div>
+          <div class="file-list" id="rsaEvList"></div>
+        </div>
+      </section>
+
+      <button type="submit" class="primary">檢查並預覽</button>
+    </form>
+
+    <section class="card hidden" id="rsaPreview">
+      <h3>送出內容預覽<small>請確認欄位對應無誤後再送出</small></h3>
+      <div class="pv-table-wrap"><table class="pv-table" id="rsaPvTable"></table></div>
+      <p class="pv-note">「null」代表未填或無法判斷，會原樣送給後端，由審核流程標記，不會自動補值。</p>
+      <div class="btn-row">
+        <button type="button" class="btn-ghost" id="rsaBackEdit">回去修改</button>
+        <button type="button" class="primary" id="rsaSubmitBtn">確認送出</button>
+      </div>
+    </section>
+
+    <section class="card confirm hidden" id="rsaConfirm">
+      <div class="check">✓</div>
+      <h2>案件已登錄，系統審核中</h2>
+      <p id="rsaConfirmCategory"></p>
+      <p id="rsaConfirmWarn" style="color:var(--warn-ink)"></p>
+      <div class="caseid" id="rsaCaseId"></div>
+      <div class="btn-row" style="max-width:360px;margin:20px auto 0;">
+        <button type="button" class="btn-ghost" id="rsaNewCase">登錄下一筆</button>
+      </div>
+    </section>
+  </div>
+</div>
+</div>
+
+<!-- ======================================================== -->
+<!-- TPL：沿用 tpl.html 表單（欄位與流程不更動，id/name 相同，   -->
+<!-- 所以可以直接交給 common.js 的 initClaimPage() 處理）          -->
+<!-- ======================================================== -->
+<div id="panel-tpl" role="tabpanel" aria-labelledby="tab-tpl" class="hidden">
+<div class="page-layout">
+  <aside class="demo-sidebar">
+    <div class="demo-card">
+      <span class="demo-badge">Demo 專用・僅供展示</span>
+      <h2>案例代入</h2>
+      <p class="demo-hint">點選下方案例，系統會自動代入對應申請資料，方便對主管機關展示各種審核情境。</p>
+      <div class="demo-list" id="demoList"></div>
+      <button type="button" class="demo-reset" id="demoResetBtn">清空表單</button>
+    </div>
+  </aside>
+
+  <div class="shell">
+  <div id="formCard" class="card" style="padding-bottom:22px">
+    <div id="errBox" class="errbox"></div>
+    <form id="claimForm">
+      <input type="hidden" name="insurance_type" value="第三人責任險">
+      <input type="hidden" name="channel" value="web">
+
+      <div class="field">
+        <label>保單照片（選填，系統會自動辨識保單號／被保險人姓名）</label>
+        <div class="upload-zone" id="policyUploadZone">
+          點擊選擇檔案，或將保單照片拖曳到這裡
+          <input type="file" id="policyFileInput" name="policy_documents" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none">
+        </div>
+        <div id="policyFileList"></div>
+      </div>
+
+      <div class="field">
+        <label for="policy_no">保單號碼（未上傳保單照片時必填）</label>
+        <input id="policy_no" name="policy_no" placeholder="例如 POL-2026-88901，或上傳保單照片讓系統自動帶入">
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label for="applicant_name">被保險人姓名（未上傳保單照片時必填）</label>
+          <input id="applicant_name" name="applicant_name" placeholder="或上傳保單照片讓系統自動帶入">
+        </div>
+        <div class="field">
+          <label for="claim_amount">申請理賠金額 (NT$)（未上傳佐證文件時必填）</label>
+          <input id="claim_amount" name="claim_amount" type="number" min="0" step="1" placeholder="或上傳診斷證明／估價單讓系統自動帶入">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="incident_date">事故／就醫日期（未上傳佐證文件時必填）</label>
+        <input id="incident_date" name="incident_date" type="date">
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label for="accident_area">事故地區（未填寫將轉人工複核）</label>
+          <input id="accident_area" name="accident_area" placeholder="例如 台北市">
+        </div>
+        <div class="field">
+          <label for="own_fault_pct">本車肇責比例 %（未填寫將轉人工複核；責任比例尚有爭議可先留空）</label>
+          <input id="own_fault_pct" name="own_fault_pct" type="number" min="0" max="100" step="1" placeholder="例如 70">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="injury_desc">傷勢描述（未填寫將轉人工複核；請具體說明受傷部位、程度、就醫情形，若無人員受傷可填「無」）</label>
+        <textarea id="injury_desc" name="injury_desc" rows="3" placeholder="例如：事故造成右腳踝骨折，已於某某醫院就醫治療"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="description">事故簡述（選填，請說明事故經過、雙方責任歸屬、對方受傷或財損情形等）</label>
+        <textarea id="description" name="description" rows="3" placeholder="請簡述事故經過"></textarea>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label for="contact_email">聯絡 email</label>
+          <input id="contact_email" name="contact_email" type="email" placeholder="用來通知審核結果">
+        </div>
+        <div class="field">
+          <label for="contact_phone">聯絡電話</label>
+          <input id="contact_phone" name="contact_phone" type="tel" placeholder="email 與電話至少填一項">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>理賠佐證文件（診斷證明、維修估價單、道路交通事故初步分析研判表等，系統會自動辨識金額／日期，支援 PDF / PNG / JPG）</label>
+        <div class="upload-zone" id="uploadZone">
+          點擊選擇檔案，或將檔案拖曳到這裡
+          <input type="file" id="fileInput" name="evidence_documents" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none">
+        </div>
+        <div id="fileList"></div>
+      </div>
+
+      <button type="submit" class="primary" id="submitBtn">送出申請</button>
+    </form>
+  </div>
+
+  <div id="confirmCard" class="card confirm hidden">
+    <div class="check">✓</div>
+    <h2>已受理，審核中</h2>
+    <p>您的理賠申請已成功送出，系統正在進行審核。</p>
+    <p>審核完成後，我們會透過您留下的聯絡方式通知結果。</p>
+    <div class="caseid" id="caseIdDisplay"></div>
+  </div>
+  </div>
+</div>
+</div>
+
+<!-- 案件進度查詢（兩個分頁共用；元素 id 沿用 common.js 的慣例） -->
+<div class="lookup-wrap">
+  <div class="lookup-inner">
+    <div class="divider"></div>
+    <p class="test-note">測試用：正式版通知是 email／簡訊，此處僅供尚未接上真實通知服務前手動查詢進度。</p>
+    <div class="card lookup-card">
+      <div class="field" style="margin-bottom:12px">
+        <label for="lookupInput">輸入案件編號查詢進度</label>
+        <input id="lookupInput" placeholder="例如 CLM-XXXXXXXXXX">
+      </div>
+      <button class="primary" id="lookupBtn" style="background:var(--ink-soft)">查詢</button>
+      <div id="statusResult"></div>
+    </div>
+  </div>
+</div>
+
+<script src="common.js"></script>
+<script src="demo_tpl.js"></script>
+<script src="staff_rsa.js"></script>
+<script>
+// ------------------------------------------------------------
+// 分頁切換（網址 #rsa / #tpl，方便直接分享連結）
+// ------------------------------------------------------------
+function showTab(name) {
+  if (name !== "tpl") name = "rsa";
+  document.querySelectorAll(".tab").forEach(t => t.setAttribute("aria-selected", t.dataset.tab === name ? "true" : "false"));
+  document.getElementById("panel-rsa").classList.toggle("hidden", name !== "rsa");
+  document.getElementById("panel-tpl").classList.toggle("hidden", name !== "tpl");
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+}
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => showTab(t.dataset.tab)));
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
+
+// TPL 分頁：與 tpl.html 完全相同的送出邏輯
+initClaimPage({ demoCases: TPL_DEMO_CASES });
+
+// 案件查詢摘要：理賠人員登錄的 RSA 案件沒有「申請人」，改顯示報修單號／車號／處理歸類
+const _renderClaimSummaryBase = renderClaimSummary;
+renderClaimSummary = function (data) {
+  const html = _renderClaimSummaryBase(data);
+  const sf = data.submitted_fields || {};
+  if (sf.intake_mode !== "staff") return html;
+  const extra = `
+    <div class="claim-summary-row"><strong>報修單號：</strong>${escapeHtml(data.report_no) || "未提供"}　<strong>車號：</strong>${escapeHtml(data.plate_no) || "未提供"}</div>
+    <div class="claim-summary-row"><strong>處理情形：</strong>${[sf.handling_1, sf.handling_2, sf.handling_3].filter(Boolean).map(escapeHtml).join(" → ") || "未提供"}（歸類：${escapeHtml(data.service_category) || "交人工判斷"}）</div>`;
+  return html.replace(/<div class="claim-summary-row"><strong>申請人：<\/strong>.*?<\/div>/, extra);
+};
+</script>
+</body>
+</html>

@@ -277,6 +277,62 @@ def get_claim(case_id: str) -> dict | None:
     return d
 
 
+# 2026-09 新增：RSA Rule Agent 的 decide_rsa_v3() 需要 usage.used_count_before_case／
+# used_amount_before_case 才能判斷是否超過方案的年度救援次數/金額上限，但這兩個
+# 欄位從來沒有任何資料來源——claim-intake 自己的 claims 表其實已經存了每一筆
+# 過去案件的 policy_no/claim_amount/incident_date，這裡直接查詢，不需要另外
+# 蓋一個使用次數追蹤系統。
+#
+# 「本案前」的範圍定義：同一張保單、事故日期早於這次事故、且落在這次事故往前
+# 推 365 天內（近似「保單年度」，因為 claim-intake 目前沒有保單起訖日期可以
+# 精確算保單年度，這是誠實的近似值，不是精確的保單週期）。
+#
+# 只算「已核准放行」的歷史案件（pipeline_result 裡 decision=="execute"）—— 誠實的
+# 理由：「使用次數」指的是保戶真的用掉的救援次數，被拒賠/還在人工複核中的案件
+# 不該算進已使用額度，否則會不合理地卡住保戶原本還沒用完的救援次數。
+def get_rsa_usage_before_case(policy_no: str, before_date: str, exclude_case_id: str) -> dict:
+    """回傳 {'used_count_before_case': int, 'used_amount_before_case': float}。
+    policy_no 為空、before_date 解析失敗、或查詢本身出錯，都回傳
+    {'used_count_before_case': None, 'used_amount_before_case': None}，
+    誠實交給 decide_rsa_v3() 判斷資料不足，不能因為查詢失敗就假裝是 0 次。"""
+    empty = {"used_count_before_case": None, "used_amount_before_case": None}
+    if not policy_no or not before_date:
+        return empty
+    try:
+        before_dt = datetime.fromisoformat(before_date.replace("Z", "+00:00")) if "T" in before_date \
+            else datetime.strptime(before_date, "%Y-%m-%d")
+        since_dt = before_dt - timedelta(days=365)
+    except (ValueError, TypeError):
+        return empty
+
+    try:
+        with _conn() as con:
+            cur = _execute(
+                con,
+                "SELECT case_id, claim_amount, pipeline_result FROM claims "
+                "WHERE policy_no = ? AND case_id != ? "
+                "AND incident_date IS NOT NULL AND incident_date < ? AND incident_date >= ?",
+                (policy_no, exclude_case_id, before_date, since_dt.strftime("%Y-%m-%d")),
+            )
+            rows = _rows_as_dicts(cur)
+    except Exception:
+        return empty
+
+    count, total = 0, 0.0
+    for row in rows:
+        pipeline_result = row.get("pipeline_result")
+        if not pipeline_result:
+            continue
+        try:
+            decision = json.loads(pipeline_result).get("decision")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            continue
+        if decision == "execute":
+            count += 1
+            total += row.get("claim_amount") or 0
+    return {"used_count_before_case": count, "used_amount_before_case": total}
+
+
 def apply_ocr_autofill(case_id: str, updates: dict, filled_field_names: list):
     """把 OCR 找到、但保戶表單留空的欄位補進去。
 

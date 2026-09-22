@@ -341,6 +341,15 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
         if _blank(submitted_fields.get("rsa_addon_purchased")) and ocr_addon is not None:
             submitted_fields["rsa_addon_purchased"] = "是" if ocr_addon else "否"
 
+        # 2026-09 新增：查詢這張保單在事故日往前 365 天內、已核准放行的歷史 RSA
+        # 案件次數/金額，餵給 decide_rsa_v3() 的 usage.used_count_before_case／
+        # used_amount_before_case——這兩個欄位原本永遠是 None，是 Advisory LLM
+        # 判定「資料不足」進而讓 Agreement Gate 卡在 BLOCKED 的常見原因之一
+        # （見 store.py::get_rsa_usage_before_case() 的完整說明）。
+        usage_before_case = store.get_rsa_usage_before_case(
+            submitted_fields.get("policy_no"), submitted_fields.get("incident_date"), case_id
+        )
+
         # 2026-08 新增：把「有沒有上傳保單照片／佐證文件」轉換成 RSA Rule
         # Agent 需要的 documents.available_types。這裡只能誠實地做到「有
         # 上傳檔案就視為對應文件存在」，沒辦法驗證檔案內容是否真的符合
@@ -356,6 +365,7 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
         claim_data = {**submitted_fields, "ocr_result": ocr_result,
                       "description_parsed": parse_result,
                       "rsa_fields": rsa_fields,
+                      "usage_before_case": usage_before_case,
                       "available_document_types": available_document_types}
 
         # 2026-08 新增：第三人責任險（TPL）案件現在是三段式管線：

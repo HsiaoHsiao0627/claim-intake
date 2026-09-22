@@ -40,6 +40,7 @@ from fastapi.responses import StreamingResponse
 
 import store
 import seams
+import staff_rules
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -89,9 +90,42 @@ async def submit_claim(
     accident_area: Optional[str] = Form(None),
     own_fault_pct: Optional[float] = Form(None),
     injury_desc: Optional[str] = Form(None),
+    # 2026-09 新增：理賠人員登錄模式（staff.html 的 RSA 分頁）。intake_mode 決定
+    # 驗證規則，channel 仍然只是記錄用途，不拿來做業務判斷。保戶自助頁面
+    # （rsa.html／tpl.html）不帶 intake_mode，預設 customer，行為完全不變。
+    intake_mode: str = Form("customer"),
+    project_name: Optional[str] = Form(None),
+    report_date: Optional[str] = Form(None),
+    report_time: Optional[str] = Form(None),
+    report_no: Optional[str] = Form(None),
+    plate_no: Optional[str] = Form(None),
+    driver_id: Optional[str] = Form(None),
+    driver_name: Optional[str] = Form(None),
+    fault_location: Optional[str] = Form(None),
+    tow_destination: Optional[str] = Form(None),
+    handling_1: Optional[str] = Form(None),
+    handling_2: Optional[str] = Form(None),
+    handling_3: Optional[str] = Form(None),
+    accident_km: Optional[float] = Form(None),
     policy_documents: list[UploadFile] = File(default=[]),
     evidence_documents: list[UploadFile] = File(default=[]),
 ):
+    if intake_mode not in ("customer", "staff"):
+        raise HTTPException(400, f"不支援的 intake_mode：{intake_mode}")
+    is_staff_rsa = intake_mode == "staff" and insurance_type != "第三人責任險"
+
+    if is_staff_rsa:
+        return await _submit_staff_rsa_claim(
+            background_tasks, insurance_type=insurance_type, channel=channel,
+            policy_no=policy_no, policy_active=policy_active, project_name=project_name,
+            claim_amount=claim_amount, incident_date=incident_date, description=description,
+            report_date=report_date, report_time=report_time, report_no=report_no,
+            plate_no=plate_no, driver_id=driver_id, driver_name=driver_name,
+            fault_location=fault_location, tow_destination=tow_destination,
+            handling=[handling_1, handling_2, handling_3], accident_km=accident_km,
+            policy_documents=policy_documents, evidence_documents=evidence_documents,
+        )
+
     if not contact_email and not contact_phone:
         raise HTTPException(400, "email 與電話至少要留一個，否則無法通知結果")
 
@@ -118,22 +152,7 @@ async def submit_claim(
     }
 
     case_id = store.create_claim(submitted_fields, file_paths={}, channel=channel)
-
-    # 存檔（SEAM：測試階段存本地磁碟，上線後改存 Cloud Storage，
-    # 用簽章網址讓前端直接上傳，避免大檔案吃掉 API 的請求大小限制）
-    case_dir = UPLOAD_DIR / case_id
-    saved = {"policy": [], "evidence": []}
-    for doc_type, docs in (("policy", policy_documents), ("evidence", evidence_documents)):
-        if not docs:
-            continue
-        sub_dir = case_dir / doc_type
-        sub_dir.mkdir(parents=True, exist_ok=True)
-        for doc in docs:
-            dest = sub_dir / doc.filename
-            with dest.open("wb") as f:
-                shutil.copyfileobj(doc.file, f)
-            saved[doc_type].append(str(dest))
-    store.update_status(case_id, "received", file_paths=json.dumps(saved))
+    saved = _save_uploads(case_id, policy_documents, evidence_documents)
 
     background_tasks.add_task(_process_claim, case_id, submitted_fields, saved)
 
@@ -142,6 +161,137 @@ async def submit_claim(
         "status": "received",
         "message": "您的理賠申請已受理，審核完成後將以您留下的聯絡方式通知結果。",
     }
+
+
+def _save_uploads(case_id: str, policy_documents, evidence_documents) -> dict:
+    """存檔（SEAM：測試階段存本地磁碟，上線後改存 Cloud Storage，
+    用簽章網址讓前端直接上傳，避免大檔案吃掉 API 的請求大小限制）"""
+    case_dir = UPLOAD_DIR / case_id
+    saved = {"policy": [], "evidence": []}
+    for doc_type, docs in (("policy", policy_documents), ("evidence", evidence_documents)):
+        if not docs:
+            continue
+        sub_dir = case_dir / doc_type
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        for doc in docs:
+            dest = sub_dir / Path(doc.filename).name  # 只取檔名，避免路徑穿越
+            with dest.open("wb") as f:
+                shutil.copyfileobj(doc.file, f)
+            saved[doc_type].append(str(dest))
+    store.update_status(case_id, "received", file_paths=json.dumps(saved))
+    return saved
+
+
+# ============================================================
+# 理賠人員登錄（RSA）：欄位對齊 RSA Excel，受理規則與保戶自助版分開
+# ============================================================
+def _clean(value):
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+async def _submit_staff_rsa_claim(background_tasks: BackgroundTasks, *, insurance_type, channel,
+                                  policy_no, policy_active, project_name, claim_amount,
+                                  incident_date, description, report_date, report_time,
+                                  report_no, plate_no, driver_id, driver_name, fault_location,
+                                  tow_destination, handling, accident_km,
+                                  policy_documents, evidence_documents):
+    report_no = _clean(report_no)
+    policy_no = _clean(policy_no)
+    project_name = _clean(project_name)
+    plate_no = _clean(plate_no)
+    driver_id = (_clean(driver_id) or "").upper() or None
+    handling_items = staff_rules.normalize_handling(handling)
+
+    required = {
+        "報修日期": _clean(report_date), "報修時間": _clean(report_time), "報修單號": report_no,
+        "專案名稱": project_name, "車號": plate_no, "事故日期": _clean(incident_date),
+        "申請理賠金額": claim_amount,
+    }
+    missing = [label for label, value in required.items() if value in (None, "")]
+    if not handling_items:
+        missing.append("處理情形")
+    if not policy_no and not policy_documents:
+        missing.append("保單號碼（或上傳保單照片）")
+    if missing:
+        raise HTTPException(400, f"以下欄位必填：{'、'.join(missing)}")
+
+    id_error = staff_rules.check_driver_id(driver_id)
+    warnings = []
+    if id_error and "檢查碼" in id_error:
+        # 歷史資料 1,039 筆中有 3 筆身分證檢查碼不符，實務上可能是原始紀錄的
+        # 問題，檢查碼錯誤只記警告、不擋受理；格式完全不對才擋。
+        warnings.append(id_error)
+    elif id_error:
+        raise HTTPException(400, id_error)
+    if not staff_rules.REPORT_NO_PATTERN.match(report_no):
+        warnings.append("報修單號不是 7 位數字，與歷史資料格式不同")
+
+    existing = store.find_by_report_no(report_no)
+    if existing:
+        raise HTTPException(409, f"報修單號 {report_no} 已登錄過（案件 {existing}），同一張派工單不可重複送出")
+
+    category = staff_rules.classify_handling(handling_items)
+    project_limits = staff_rules.parse_project_name(project_name)
+
+    submitted_fields = {
+        "intake_mode": "staff",
+        "insurance_type": insurance_type,
+        "policy_no": policy_no,
+        # 被保險人姓名不再由人員輸入；保單照片 OCR 若讀到會自動補進來（不顯示於表單）
+        "applicant_name": None,
+        "policy_active": _clean(policy_active),
+        # 有填專案名稱即代表有投保道路救援附加條款
+        "rsa_addon_purchased": "是",
+        "project_name": project_name,
+        "project_limits": project_limits,
+        "claim_amount": claim_amount,
+        "incident_date": _clean(incident_date),
+        "description": description or "",
+        "report_date": _clean(report_date),
+        "report_time": _clean(report_time),
+        "report_no": report_no,
+        "plate_no": plate_no,
+        "driver_id": driver_id,
+        "driver_name": _clean(driver_name),
+        "fault_location": _clean(fault_location),
+        "tow_destination": _clean(tow_destination),
+        "handling_1": handling_items[0] if len(handling_items) > 0 else None,
+        "handling_2": handling_items[1] if len(handling_items) > 1 else None,
+        "handling_3": handling_items[2] if len(handling_items) > 2 else None,
+        "service_category": category,
+        "accident_km": accident_km,
+        "validation_warnings": warnings,
+        "contact_email": None, "contact_phone": None,
+    }
+
+    try:
+        case_id = store.create_claim(submitted_fields, file_paths={}, channel=channel)
+    except Exception:
+        # 兩個人同時送出同一張單：由資料庫唯一索引擋下，這裡轉成明確的 409
+        existing = store.find_by_report_no(report_no)
+        if existing:
+            raise HTTPException(409, f"報修單號 {report_no} 已登錄過（案件 {existing}），同一張派工單不可重複送出")
+        raise
+
+    saved = _save_uploads(case_id, policy_documents, evidence_documents)
+    background_tasks.add_task(_process_claim, case_id, submitted_fields, saved)
+    return {
+        "case_id": case_id,
+        "status": "received",
+        "service_category": category,
+        "validation_warnings": warnings,
+        "message": "案件已登錄，系統審核中。",
+    }
+
+
+@app.get("/v1/staff/report-no/{report_no}")
+def staff_check_report_no(report_no: str):
+    """前端輸入報修單號後即時檢查是否重複（送出時後端還會再擋一次）。"""
+    case_id = store.find_by_report_no(report_no.strip())
+    return {"report_no": report_no, "exists": case_id is not None, "case_id": case_id}
 
 
 # ============================================================
@@ -167,7 +317,7 @@ def _blank(value) -> bool:
 # 的「## 案件描述」格式），不是結構化欄位，這裡把表單欄位組成一段敘述文字。
 # 刻意用「（未提供）」而不是略過欄位，讓 Rules Agent 自己判斷資訊夠不夠，
 # 不要讓 claim-intake 這邊先幫忙腦補或省略掉空欄位造成的資訊落差。
-def _build_tpl_case_description(submitted_fields: dict, document_note: str = "") -> str:
+def _build_tpl_case_description(submitted_fields: dict) -> str:
     accident_area = submitted_fields.get("accident_area") or "（未提供）"
     own_fault_pct = submitted_fields.get("own_fault_pct")
     own_fault_str = f"{own_fault_pct}%" if own_fault_pct not in (None, "") else "（未提供，責任比例尚未確定）"
@@ -175,46 +325,12 @@ def _build_tpl_case_description(submitted_fields: dict, document_note: str = "")
     general_desc = submitted_fields.get("description") or "（未提供）"
     claim_amount = submitted_fields.get("claim_amount")
     claim_amount_str = f"新台幣 {claim_amount} 元" if claim_amount not in (None, "") else "（未提供）"
-    base = (
+    return (
         f"事故地區：{accident_area}。本車肇責比例：{own_fault_str}。\n"
         f"傷勢描述：{injury_desc}\n"
         f"事故經過：{general_desc}\n"
         f"申請理賠金額：{claim_amount_str}"
     )
-    return f"{base}\n{document_note}" if document_note else base
-
-
-# 2026-09 新增：TPL Rules Agent 的 missing_data 幾乎都是「診斷書」「醫療費收據」
-# 「和解書」這類文件缺漏（實測 296 筆真實案件裡 98.6% 判「資料不足」，主因正是
-# 這個）。根本原因是 case_description 這段自由文字裡從來沒有任何地方提到保戶
-# 到底有沒有附文件——RSA 那邊有 documents.available_types 這個結構化欄位可以
-# 講清楚，TPL 這裡完全沒有對應機制。
-#
-# 這裡只誠實地講「OCR 真的驗證過的東西」：有沒有上傳佐證文件（純粹計數，
-# 不臆測文件種類）、以及 OCR 有沒有讀到明確的診斷病名／金額——不會宣稱有
-# 「和解書」「憲警處理證明」「理賠申請書」「戶口名簿」「行照駕照」這幾種
-# 完全沒有 OCR 欄位可以驗證的文件種類，避免對 Rules Agent 謊報資料完整度。
-def _build_tpl_document_note(file_paths: dict, ocr_result: dict) -> str:
-    evidence_files = file_paths.get("evidence") or []
-    policy_files = file_paths.get("policy") or []
-    evidence_fields = (ocr_result.get("evidence") or {}).get("fields") or {}
-
-    if not evidence_files and not policy_files:
-        return "檢附文件：保戶尚未上傳任何保單或佐證文件。"
-
-    parts = [f"檢附文件：已上傳保單文件 {len(policy_files)} 份、佐證文件 {len(evidence_files)} 份。"]
-    diagnosis = evidence_fields.get("diagnosis")
-    amount = evidence_fields.get("amount")
-    verified_bits = []
-    if diagnosis:
-        verified_bits.append(f"其中一份文件載明診斷病名為「{diagnosis}」")
-    if amount not in (None, ""):
-        verified_bits.append(f"載明金額為新台幣 {amount} 元")
-    if verified_bits:
-        parts.append("，".join(verified_bits) + "。")
-    else:
-        parts.append("文件內容尚未能自動辨識出具體診斷或金額，實際文件種類與內容需人工核對。")
-    return "".join(parts)
 
 
 def _build_judge_case_from_tpl(case_id: str, submitted_fields: dict, ocr_result: dict,
@@ -335,8 +451,12 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
 
         # 保戶手填 + OCR 自動帶入之後，關鍵欄位若仍缺，誠實停在這裡轉人工，
         # 不要讓協調層拿到 None/0 這種會被誤判成「金額為零」的資料去做決策。
-        missing = [f for f in ("policy_no", "applicant_name", "claim_amount", "incident_date")
-                   if _blank(submitted_fields.get(f))]
+        # 理賠人員模式已移除被保險人姓名欄位（改以駕駛人資料＋報修單號識別案件），
+        # 所以 applicant_name 只對保戶自助版是必要欄位。
+        required_after_ocr = ("policy_no", "claim_amount", "incident_date")
+        if submitted_fields.get("intake_mode") != "staff":
+            required_after_ocr = ("policy_no", "applicant_name", "claim_amount", "incident_date")
+        missing = [f for f in required_after_ocr if _blank(submitted_fields.get(f))]
         if missing:
             store.update_status(
                 case_id, "escalated_human",
@@ -375,15 +495,6 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
         if _blank(submitted_fields.get("rsa_addon_purchased")) and ocr_addon is not None:
             submitted_fields["rsa_addon_purchased"] = "是" if ocr_addon else "否"
 
-        # 2026-09 新增：查詢這張保單在事故日往前 365 天內、已核准放行的歷史 RSA
-        # 案件次數/金額，餵給 decide_rsa_v3() 的 usage.used_count_before_case／
-        # used_amount_before_case——這兩個欄位原本永遠是 None，是 Advisory LLM
-        # 判定「資料不足」進而讓 Agreement Gate 卡在 BLOCKED 的常見原因之一
-        # （見 store.py::get_rsa_usage_before_case() 的完整說明）。
-        usage_before_case = store.get_rsa_usage_before_case(
-            submitted_fields.get("policy_no"), submitted_fields.get("incident_date"), case_id
-        )
-
         # 2026-08 新增：把「有沒有上傳保單照片／佐證文件」轉換成 RSA Rule
         # Agent 需要的 documents.available_types。這裡只能誠實地做到「有
         # 上傳檔案就視為對應文件存在」，沒辦法驗證檔案內容是否真的符合
@@ -399,7 +510,6 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
         claim_data = {**submitted_fields, "ocr_result": ocr_result,
                       "description_parsed": parse_result,
                       "rsa_fields": rsa_fields,
-                      "usage_before_case": usage_before_case,
                       "available_document_types": available_document_types}
 
         # 2026-08 新增：第三人責任險（TPL）案件現在是三段式管線：
@@ -423,8 +533,7 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
                 return
 
             rules_client = seams.get_tpl_rules_agent_client()
-            document_note = _build_tpl_document_note(file_paths, ocr_result)
-            case_description = _build_tpl_case_description(submitted_fields, document_note)
+            case_description = _build_tpl_case_description(submitted_fields)
             try:
                 rules_result = await rules_client.get_decision(case_description)
             except Exception as e:
@@ -559,7 +668,7 @@ def admin_list_claims(
     channel: Optional[str] = None,
     insurance_type: Optional[str] = None,
     review_status: Optional[str] = None,
-    q: Optional[str] = Query(None, description="模糊搜尋 case_id / policy_no / applicant_name"),
+    q: Optional[str] = Query(None, description="模糊搜尋 case_id / policy_no / applicant_name / report_no / plate_no / driver_name"),
     date_from: Optional[str] = Query(None, description="ISO 日期，篩 created_at 起"),
     date_to: Optional[str] = Query(None, description="ISO 日期，篩 created_at 迄"),
     page: int = Query(1, ge=1),

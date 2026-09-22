@@ -160,6 +160,20 @@ CREATE INDEX IF NOT EXISTS idx_claims_channel ON claims(channel);
 _MIGRATION_COLUMNS = [
     ("ocr_filled_fields", "TEXT", "TEXT"),
     ("description_parsed", "TEXT", "TEXT"),
+    # 2026-09 理賠人員登錄模式（RSA）：清單／搜尋／重複檢查要用到的欄位獨立成
+    # 欄，其餘新欄位（駕駛人ID、處理情形一二三等）跟著 submitted_fields 存 JSON。
+    ("report_no", "TEXT", "TEXT"),
+    ("plate_no", "TEXT", "TEXT"),
+    ("driver_name", "TEXT", "TEXT"),
+    ("project_name", "TEXT", "TEXT"),
+    ("service_category", "TEXT", "TEXT"),
+]
+
+# 報修單號唯一：NULL 不受限制（保戶自助案件沒有報修單號），SQLite 與
+# PostgreSQL 的 UNIQUE 索引都允許多筆 NULL。這是重複單號的最後一道防線，
+# 前端即時檢查與 API 送出前的檢查都只是提早告知。
+_POST_MIGRATION_SQL = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_report_no ON claims(report_no)",
 ]
 
 
@@ -173,6 +187,8 @@ def _ensure_columns(con):
         for col, sqlite_type, _pg_type in _MIGRATION_COLUMNS:
             if col not in existing:
                 con.execute(f"ALTER TABLE claims ADD COLUMN {col} {sqlite_type}")
+    for stmt in _POST_MIGRATION_SQL:
+        _execute(con, stmt)
 
 
 def init_db():
@@ -236,18 +252,32 @@ def create_claim(submitted_fields: dict, file_paths: list, channel: str = "web")
             con,
             "INSERT INTO claims (case_id, channel, status, created_at, updated_at, "
             "contact_email, contact_phone, policy_no, applicant_name, insurance_type, "
-            "claim_amount, incident_date, submitted_fields, file_paths) "
-            "VALUES (?, ?, 'received', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "claim_amount, incident_date, report_no, plate_no, driver_name, project_name, "
+            "service_category, submitted_fields, file_paths) "
+            "VALUES (?, ?, 'received', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 case_id, channel, now, now,
                 submitted_fields.get("contact_email"), submitted_fields.get("contact_phone"),
                 submitted_fields.get("policy_no"), submitted_fields.get("applicant_name"),
                 submitted_fields.get("insurance_type"), submitted_fields.get("claim_amount"),
                 submitted_fields.get("incident_date"),
+                submitted_fields.get("report_no"), submitted_fields.get("plate_no"),
+                submitted_fields.get("driver_name"), submitted_fields.get("project_name"),
+                submitted_fields.get("service_category"),
                 json.dumps(submitted_fields, ensure_ascii=False), json.dumps(file_paths),
             ),
         )
     return case_id
+
+
+def find_by_report_no(report_no: str | None) -> str | None:
+    """回傳已使用該報修單號的案件編號；沒有則回傳 None。"""
+    if not report_no:
+        return None
+    with _conn() as con:
+        cur = _execute(con, "SELECT case_id FROM claims WHERE report_no = ?", (report_no,))
+        rows = _rows_as_dicts(cur)
+    return rows[0]["case_id"] if rows else None
 
 
 def update_status(case_id: str, status: str, **fields):
@@ -275,62 +305,6 @@ def get_claim(case_id: str) -> dict | None:
         if d.get(k):
             d[k] = json.loads(d[k])
     return d
-
-
-# 2026-09 新增：RSA Rule Agent 的 decide_rsa_v3() 需要 usage.used_count_before_case／
-# used_amount_before_case 才能判斷是否超過方案的年度救援次數/金額上限，但這兩個
-# 欄位從來沒有任何資料來源——claim-intake 自己的 claims 表其實已經存了每一筆
-# 過去案件的 policy_no/claim_amount/incident_date，這裡直接查詢，不需要另外
-# 蓋一個使用次數追蹤系統。
-#
-# 「本案前」的範圍定義：同一張保單、事故日期早於這次事故、且落在這次事故往前
-# 推 365 天內（近似「保單年度」，因為 claim-intake 目前沒有保單起訖日期可以
-# 精確算保單年度，這是誠實的近似值，不是精確的保單週期）。
-#
-# 只算「已核准放行」的歷史案件（pipeline_result 裡 decision=="execute"）—— 誠實的
-# 理由：「使用次數」指的是保戶真的用掉的救援次數，被拒賠/還在人工複核中的案件
-# 不該算進已使用額度，否則會不合理地卡住保戶原本還沒用完的救援次數。
-def get_rsa_usage_before_case(policy_no: str, before_date: str, exclude_case_id: str) -> dict:
-    """回傳 {'used_count_before_case': int, 'used_amount_before_case': float}。
-    policy_no 為空、before_date 解析失敗、或查詢本身出錯，都回傳
-    {'used_count_before_case': None, 'used_amount_before_case': None}，
-    誠實交給 decide_rsa_v3() 判斷資料不足，不能因為查詢失敗就假裝是 0 次。"""
-    empty = {"used_count_before_case": None, "used_amount_before_case": None}
-    if not policy_no or not before_date:
-        return empty
-    try:
-        before_dt = datetime.fromisoformat(before_date.replace("Z", "+00:00")) if "T" in before_date \
-            else datetime.strptime(before_date, "%Y-%m-%d")
-        since_dt = before_dt - timedelta(days=365)
-    except (ValueError, TypeError):
-        return empty
-
-    try:
-        with _conn() as con:
-            cur = _execute(
-                con,
-                "SELECT case_id, claim_amount, pipeline_result FROM claims "
-                "WHERE policy_no = ? AND case_id != ? "
-                "AND incident_date IS NOT NULL AND incident_date < ? AND incident_date >= ?",
-                (policy_no, exclude_case_id, before_date, since_dt.strftime("%Y-%m-%d")),
-            )
-            rows = _rows_as_dicts(cur)
-    except Exception:
-        return empty
-
-    count, total = 0, 0.0
-    for row in rows:
-        pipeline_result = row.get("pipeline_result")
-        if not pipeline_result:
-            continue
-        try:
-            decision = json.loads(pipeline_result).get("decision")
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            continue
-        if decision == "execute":
-            count += 1
-            total += row.get("claim_amount") or 0
-    return {"used_count_before_case": count, "used_amount_before_case": total}
 
 
 def apply_ocr_autofill(case_id: str, updates: dict, filled_field_names: list):
@@ -408,8 +382,9 @@ def _build_filter_clause(filters: dict):
     q = filters.get("q")
     if q:
         like = f"%{q}%"
-        clauses.append("(case_id LIKE ? OR policy_no LIKE ? OR applicant_name LIKE ?)")
-        params.extend([like, like, like])
+        clauses.append("(case_id LIKE ? OR policy_no LIKE ? OR applicant_name LIKE ? "
+                       "OR report_no LIKE ? OR plate_no LIKE ? OR driver_name LIKE ?)")
+        params.extend([like] * 6)
     date_from = filters.get("date_from")
     if date_from:
         clauses.append("created_at >= ?")
@@ -425,7 +400,8 @@ def _build_filter_clause(filters: dict):
 LIST_COLUMNS = (
     "case_id, channel, status, review_status, reviewed_by, reviewed_at, "
     "created_at, updated_at, contact_email, contact_phone, policy_no, "
-    "applicant_name, insurance_type, claim_amount, incident_date, error_message"
+    "applicant_name, insurance_type, claim_amount, incident_date, "
+    "report_no, plate_no, driver_name, project_name, service_category, error_message"
 )
 
 
