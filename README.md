@@ -153,3 +153,26 @@ gcloud run deploy claim-intake `
 
 `--allow-unauthenticated` 是刻意的：這支服務要給保戶的瀏覽器直接呼叫，跟規則/
 理賠/法官代理人那三支「僅協調層可呼叫」的私有服務性質不同。
+
+## 理賠人員登錄模式（2026-09 新增）
+
+`/staff.html` 是給理賠人員用的登錄頁，分成兩個分頁：
+
+- **道路救援 RSA**：欄位對齊 RSA Excel（報修日期／時間／單號、專案名稱、車號、駕駛人 ID／姓名、故障地點、拖吊目的地、處理情形一～三、事故公里數），送出時帶 `intake_mode=staff`、`channel=staff_web`。
+- **第三人責任險 TPL**：與 `tpl.html` 相同的表單與送出邏輯，未更動（demo 案例放在 `demo_tpl.js`）。
+
+保戶自助頁（`rsa.html`／`tpl.html`）不帶 `intake_mode`，預設 `customer`，行為完全不變。
+
+RSA 理賠人員模式的業務規則（`backend/staff_rules.py`，前端 `staff_rsa.js` 同步顯示，但以後端重算為準）：
+
+| 規則 | 內容 |
+|---|---|
+| 必填 | 報修日期、報修時間、報修單號、專案名稱、車號、事故日期、申請理賠金額、處理情形（至少 1 項）、保單號碼或保單照片 |
+| 不再收集 | 被保險人姓名（保單照片 OCR 讀到會自動補進 `applicant_name`，不顯示於表單）、是否投保道援附加條款（有專案名稱即視為「是」）、聯絡 email／電話 |
+| 處理情形 | 依順序最多 3 項，存成 `handling_1..3`；「車價」類不列入選項 |
+| 處理歸類 | 空趟 > 特殊作業 > 拖吊 > 急修，判斷不了留 `null` 交人工；以歷史 1,039 筆驗證一致率約 98% |
+| 專案名稱 | 解析出 `project_limits`（理賠上限／里程上限／使用次數上限），沒寫的留 `null` |
+| 報修單號 | 重複一律擋（前端即時查 `GET /v1/staff/report-no/{no}`、送出時 API 回 409、資料庫 UNIQUE 索引）；非 7 位數字只提醒 |
+| 駕駛人 ID | 格式錯誤擋；身分證檢查碼不符只記 `validation_warnings`（歷史資料有 3 筆檢查碼不符） |
+
+新欄位目前只存在 claim-intake（`claims` 表新增 `report_no`／`plate_no`／`driver_name`／`project_name`／`service_category` 欄位，其餘在 `submitted_fields`），尚未改動 rsa-rule-agent／judge-agent 的輸入。

@@ -123,8 +123,8 @@
   <div class="card">
     <div class="filters">
       <div class="field">
-        <label>搜尋（案件編號／保單號／申請人）</label>
-        <input type="text" id="f_q" placeholder="例如 CLM-... 或姓名">
+        <label>搜尋（案件編號／保單號／申請人／報修單號／車號／駕駛人）</label>
+        <input type="text" id="f_q" placeholder="例如 CLM-...、9607849 或 ABC-1234">
       </div>
       <div class="field">
         <label>處理狀態</label>
@@ -161,6 +161,7 @@
         <select id="f_channel">
           <option value="">全部</option>
           <option value="web">網頁</option>
+          <option value="staff_web">理賠人員登錄</option>
           <option value="line">LINE</option>
         </select>
       </div>
@@ -181,7 +182,8 @@
       <thead>
         <tr>
           <th>案件編號</th>
-          <th>申請人</th>
+          <th>申請人／駕駛人</th>
+          <th>報修單號</th>
           <th>保單號</th>
           <th>險種</th>
           <th>金額</th>
@@ -284,6 +286,28 @@ function fmtAmount(n) {
   return Number(n).toLocaleString("zh-Hant-TW");
 }
 
+// 理賠人員登錄（RSA）案件的專屬欄位；保戶自助案件沒有這些欄位就不顯示
+function staffRows(c) {
+  const sf = c.submitted_fields || {};
+  if (sf.intake_mode !== "staff") return "";
+  const esc = v => (v === null || v === undefined || v === "") ? "—" : String(v).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+  const handling = [sf.handling_1, sf.handling_2, sf.handling_3].filter(Boolean).map(esc).join(" → ") || "—";
+  const warns = (sf.validation_warnings || []).map(esc).join("；");
+  return `
+    <div class="k">登錄方式</div><div>理賠人員登錄</div>
+    <div class="k">報修日期／時間</div><div>${esc(sf.report_date)} ${sf.report_time ? esc(sf.report_time) : ""}</div>
+    <div class="k">報修單號</div><div>${esc(sf.report_no)}</div>
+    <div class="k">專案名稱</div><div>${esc(sf.project_name)}</div>
+    <div class="k">車號</div><div>${esc(sf.plate_no)}</div>
+    <div class="k">駕駛人</div><div>${esc(sf.driver_name)}（${esc(sf.driver_id)}）</div>
+    <div class="k">故障地點</div><div>${esc(sf.fault_location)}</div>
+    <div class="k">拖吊目的地</div><div>${esc(sf.tow_destination)}</div>
+    <div class="k">處理情形</div><div>${handling}</div>
+    <div class="k">處理歸類</div><div>${esc(sf.service_category) === "—" ? "無法自動判斷（交人工）" : esc(sf.service_category)}</div>
+    <div class="k">事故公里數</div><div>${esc(sf.accident_km)}</div>
+    ${warns ? `<div class="k">系統提醒</div><div style="color:var(--warn-ink)">${warns}</div>` : ""}`;
+}
+
 function renderTable(items) {
   const tbody = document.getElementById("tbody");
   tbody.innerHTML = "";
@@ -292,7 +316,8 @@ function renderTable(items) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${c.case_id}</td>
-      <td>${c.applicant_name || "—"}</td>
+      <td>${c.applicant_name || c.driver_name || "—"}</td>
+      <td>${c.report_no || "—"}</td>
       <td>${c.policy_no || "—"}</td>
       <td>${c.insurance_type || "—"}</td>
       <td>${fmtAmount(c.claim_amount)}</td>
@@ -325,6 +350,7 @@ async function openDetail(caseId) {
     <div class="k">申請金額</div><div>${fmtAmount(c.claim_amount)}</div>
     <div class="k">事故日期</div><div>${c.incident_date || "—"}</div>
     <div class="k">聯絡方式</div><div>${c.contact_email || "—"} / ${c.contact_phone || "—"}</div>
+    ${staffRows(c)}
     ${c.error_message ? `<div class="k">錯誤訊息</div><div style="color:var(--err-ink)">${c.error_message}</div>` : ""}
     ${c.reviewed_by ? `<div class="k">複核人員</div><div>${c.reviewed_by}（${c.reviewed_at || ""}）</div>` : ""}
     ${c.review_note ? `<div class="k">複核備註</div><div>${c.review_note}</div>` : ""}
