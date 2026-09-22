@@ -1,7 +1,5 @@
-venv/
+__pycache__/
+*.pyc
 backend/data/
 backend/uploads/
 uploads/
-**/__pycache__/
-*.pyc
-.git/
