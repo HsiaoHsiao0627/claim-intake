@@ -151,3 +151,17 @@ def handling_to_rule_agent_fields(items: list[str]) -> dict:
     category = classify_handling(s)
     special = None if category is None else (category == "特殊作業")
     return {"requested_service": service, "special_operation_required": special}
+
+
+# 2026-10 業務決定（暫定假設，之後若表單補上對應欄位就改成人員輸入）：
+# 理賠人員登錄的 RSA 案件，以下五項 Rule Agent 必要事實目前一律先假設為
+# 下列值。理由：案件都來自指定救援中心的派工紀錄（有報修單號），方案為
+# 自費購道援險（自用車），派工紀錄也沒有過路費／載貨／客貨運送費的請求。
+# 只補「描述解析沒有讀到」的欄位，描述裡若明確寫了不同的事實，以描述為準。
+STAFF_RSA_ASSUMED_FACTS = {
+    "vehicle_use": "自用",
+    "contacted_designated_center": True,
+    "claims_bridge_or_toll_fees": False,
+    "vehicle_loaded_and_unwilling_to_unload": False,
+    "claims_passenger_or_cargo_transport_cost": False,
+}

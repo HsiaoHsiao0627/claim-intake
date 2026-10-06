@@ -534,6 +534,14 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
                 rsa_fields["location"] = submitted_fields["fault_location"]
             if submitted_fields.get("accident_km") is not None:
                 rsa_fields["towing_distance_km"] = submitted_fields["accident_km"]
+            # 暫定假設（見 staff_rules.STAFF_RSA_ASSUMED_FACTS）：只補沒有值的欄位，
+            # 並把實際套用了哪些假設一起送出、存進結果，事後查得到哪些不是人員輸入。
+            assumed = {}
+            for key, value in staff_rules.STAFF_RSA_ASSUMED_FACTS.items():
+                if rsa_fields.get(key) is None:
+                    rsa_fields[key] = value
+                    assumed[key] = value
+            submitted_fields["staff_assumed_facts"] = assumed
 
         # rsa_addon_purchased 是表單上的手動選單（是／否／不確定），代表保戶
         # 或客服人員的明確輸入，永遠優先。只有保戶留空（未確認／不確定）時，
@@ -678,6 +686,9 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
 
         # return_for_recalc 走到這裡代表上面的重試迴圈已經試過、仍然沒有拍板
         # execute，claim-intake 沒有能力再自動重算，視同需要人工介入。
+        if submitted_fields.get("staff_assumed_facts"):
+            # 存進結果，後台／查詢頁看得到這次哪些欄位是暫定假設、不是人員輸入
+            result = {**result, "staff_assumed_facts": submitted_fields["staff_assumed_facts"]}
         final_status = ("escalated_human"
                          if result.get("decision") in ("escalate_human", "return_for_recalc")
                          else "completed")

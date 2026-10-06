@@ -458,6 +458,11 @@ function _rsaReplies(data, pr) {
   if (final === "ELIGIBLE_FOR_PROCESS") {
     status = "可受理"; tone = "ok";
     p.push("我檢查了保單在事故當下有效、有投保道路救援附加條款，也沒有觸發不保或不負擔的事由，必要的欄位跟文件都齊全，所以判斷這件可以進入理賠受理程序。");
+    const assumed = Object.keys(pr.staff_assumed_facts || {});
+    const ASSUMED_LABELS = { vehicle_use: "車輛用途", contacted_designated_center: "是否透過指定救援中心報修",
+      claims_bridge_or_toll_fees: "過橋／過路費", vehicle_loaded_and_unwilling_to_unload: "載貨不願卸貨",
+      claims_passenger_or_cargo_transport_cost: "乘客或貨物運送費用" };
+    if (assumed.length) p.push(`提醒：其中「${_list(assumed.map(k => ASSUMED_LABELS[k] || k))}」是理賠人員模式的暫定假設，不是人員逐案輸入的資料。`);
     const agree = AGREEMENT_STATUS_TEXT[pr.rsa_agreement_status];
     if (pr.rsa_release_status === "RELEASED") p.push(`${agree ? agree + "，" : ""}條款證據也足夠，我的結論可以直接採用。`);
     else p.push(`不過${agree || "交叉比對沒有完全通過"}，所以我的結論還需要承辦人員確認後才能放行。`);

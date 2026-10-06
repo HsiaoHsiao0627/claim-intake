@@ -269,6 +269,9 @@
       ["處理歸類（自動）", classify(picks.map(p => p.value))],
       ["申請理賠金額", d.claim_amount], ["事故簡述", d.description],
       ["佐證文件", evFiles ? `${evFiles} 個檔案` : null],
+      ["sec", "暫定假設（系統自動帶入，非人員輸入）"],
+      ["車輛用途", "自用"], ["是否透過指定救援中心報修", "是"],
+      ["是否請求過橋或過路費", "否"], ["車上是否載貨且不願卸貨", "否"], ["是否請求乘客或貨物運送費用", "否"],
     ];
     $("rsaPvTable").innerHTML = rows.map(r => r[0] === "sec"
       ? `<tr class="sec"><th colspan="2">${r[1]}</th></tr>`
@@ -327,36 +330,35 @@
   $("rsaNewCase").addEventListener("click", resetForm);
   $("rsaDemoReset").addEventListener("click", resetForm);
 
-  // Demo 案例（2026-10 改版）：從 RSA_train.db 真實派工紀錄挑出三種處理類型
-  // 各一件，報修日期／時間／單號、專案、處理情形、公里數、簽收金額都取自
-  // 原始紀錄。去識別化：駕駛人 ID／姓名、車號、保單號為虛構；故障地點只保留
-  // 到路段（拿掉門牌），拖吊目的地只留廠名。description 只寫紀錄裡有的事實。
-  // 「保單有效」填「是」的依據：這幾筆在原始資料裡都有對應的專案卡號且已
-  // 簽收付款，代表事故當下方案有效。
+  // Demo 案例（2026-10 改版）：從 RSA_train.db 派工紀錄挑出三種處理類型各一件。
+  // 報修日期／時間／單號、專案、處理情形、公里數、簽收金額、故障地點、拖吊
+  // 目的地、駕駛人 ID 皆為原始資料；原始資料已雜湊的欄位（駕駛人姓名、車號）
+  // 取雜湊值前四碼；保單號碼用原始卡號。事故簡述依派工紀錄改寫成敘述。
+  // ⚠️ 含真實駕駛人 ID 與地址，repo 公開前請先確認可揭露範圍。
   const RSA_STAFF_DEMO_CASES = [
     { id: "tow", tag: "approve", tagLabel: "一般拖吊", title: "一般拖吊",
-      desc: "平面停車場拋錨，全載拖吊 16 公里回保養廠（簽收 2,000 元）",
-      // 來源報修單號 9605505
-      data: { report_date: "2026-02-25", report_time: "10:21", report_no: "9605505", policy_no: "DEMO-RSA-0001", policy_active: "是",
-        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "DEMO-0001", driver_id: "E123456783", driver_name: "示範駕駛甲",
-        accident_km: "16", fault_location: "高雄市鼓山區美術南一街（平面停車）", tow_destination: "宏維汽車（私人保養廠）",
-        claim_amount: "2000", description: "依派工紀錄：10:21 報修，廠商到場後全載拖吊至保養廠，拖吊 16 公里，12:00 完成。" },
+      desc: "平面停車場車輛無法發動，全載拖吊 16 公里送廠（簽收 2,000 元）",
+      data: { report_date: "2026-02-25", report_time: "10:21", report_no: "9605505", policy_no: "2725VFF001215", policy_active: "是",
+        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "789d", driver_id: "E120404901", driver_name: "d9b8",
+        accident_km: "16", fault_location: "高雄市鼓山區美術南一街199號  平面", tow_destination: "宏維/仁慈路181號",
+        claim_amount: "2000",
+        description: "駕駛人上午在高雄市鼓山區美術南一街的平面停車處準備出門時，車輛無法發動，自行嘗試後仍無法排除，10:21 撥打指定救援中心報修。救援廠商到場檢查後判斷需送廠維修，以全載拖吊將車輛送往仁慈路的宏維保養廠，拖吊距離 16 公里，12:00 完成。" },
       picks: ["全載拖吊"] },
     { id: "jump", tag: "approve", tagLabel: "接電", title: "接電急修",
-      desc: "巷弄內電瓶沒電，現場接電完成、未拖吊（簽收 950 元）",
-      // 來源報修單號 9598262
-      data: { report_date: "2026-02-15", report_time: "17:01", report_no: "9598262", policy_no: "DEMO-RSA-0002", policy_active: "是",
-        project_name: "自費購道援險(50,000元,不限K次)", plate_no: "DEMO-0002", driver_id: "E224680132", driver_name: "示範駕駛乙",
-        accident_km: "0", fault_location: "高雄市仁武區京富路（巷弄內）", tow_destination: "",
-        claim_amount: "950", description: "依派工紀錄：17:01 報修，廠商到場現場接電，17:42 完成，未拖吊。" },
+      desc: "巷弄內電瓶沒電，現場接電恢復行駛、未拖吊（簽收 950 元）",
+      data: { report_date: "2026-02-15", report_time: "17:01", report_no: "9598262", policy_no: "3425VFF000120", policy_active: "是",
+        project_name: "自費購道援險(50,000元,不限K次)", plate_no: "5063", driver_id: "F128801752", driver_name: "f5a3",
+        accident_km: "0", fault_location: "高雄市仁武區京富路30巷11弄6號", tow_destination: "",
+        claim_amount: "950",
+        description: "駕駛人傍晚於高雄市仁武區京富路巷弄內住家旁要開車時，發現電瓶電力不足、車輛無法啟動，17:01 撥打指定救援中心報修。救援人員到場以接電方式協助發動，車輛恢復正常行駛，不需拖吊，17:42 完成。" },
       picks: ["接電"] },
     { id: "special", tag: "review", tagLabel: "特殊作業", title: "地下室特殊作業",
       desc: "廠區地下二樓（限高 2 米），平面拖吊加地下室特殊作業（簽收 5,050 元）",
-      // 來源報修單號 9603600
-      data: { report_date: "2026-02-23", report_time: "10:54", report_no: "9603600", policy_no: "DEMO-RSA-0003", policy_active: "是",
-        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "DEMO-0003", driver_id: "D120864200", driver_name: "示範駕駛丙",
-        accident_km: "21", fault_location: "台南市新市區環西路二段（廠區 B2 停車場，限高 2 米）", tow_destination: "駿達汽車（私人保養廠）",
-        claim_amount: "5050", description: "依派工紀錄：10:54 報修，車輛位於地下二樓、限高 2 米，以平面拖吊並執行地下室特殊作業拖出，拖吊 21 公里，16:22 完成。" },
+      data: { report_date: "2026-02-23", report_time: "10:54", report_no: "9603600", policy_no: "3425VQC006423", policy_active: "是",
+        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "0365", driver_id: "R223707634", driver_name: "e4a9",
+        accident_km: "21", fault_location: "台南市新市區環西路二段2號  群創光電B2P 限高2米", tow_destination: "駿達/中華東路二段182號",
+        claim_amount: "5050",
+        description: "車輛停放在台南市新市區群創光電廠區地下二樓停車場，駕駛人上午取車時無法發動，10:54 撥打指定救援中心報修。因停車場限高 2 米，一般拖車無法進入，救援廠商以地下室特殊作業將車輛移出至地面，再以平面拖吊送往中華東路二段的駿達保養廠，拖吊距離 21 公里，16:22 完成。" },
       picks: ["平面拖吊", "地下室B2作業", "特殊作業"] },
   ];
   renderDemoList(RSA_STAFF_DEMO_CASES, "rsaDemoList", c => {

@@ -44,3 +44,9 @@ def test_handling_to_rule_agent_fields():
     assert f(["平面拖吊", "地下室B2作業", "特殊作業"]) == {"requested_service": "TOWING", "special_operation_required": True}
     assert f(["換備胎", "打氣二輪"]) == {"requested_service": "TIRE_CHANGE", "special_operation_required": False}
     assert f(["自行輸入的情形"]) == {"requested_service": None, "special_operation_required": None}
+
+
+def test_assumed_facts_cover_rule_agent_gaps():
+    assert set(r.STAFF_RSA_ASSUMED_FACTS) == {
+        "vehicle_use", "contacted_designated_center", "claims_bridge_or_toll_fees",
+        "vehicle_loaded_and_unwilling_to_unload", "claims_passenger_or_cargo_transport_cost"}
