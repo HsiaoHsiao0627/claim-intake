@@ -110,3 +110,44 @@ def check_driver_id(value: Optional[str]) -> Optional[str]:
     if re.fullmatch(r"[A-Z][89]\d{8}", v) or re.fullmatch(r"[A-Z][A-D]\d{8}", v):
         return None
     return "駕駛人 ID 格式應為 1 個英文字母加 9 碼數字"
+
+
+# ---------------------------------------------------------------------------
+# 轉成 RSA Rule Agent 的 incident 欄位（2026-10 新增）
+# ---------------------------------------------------------------------------
+# Rule Agent 的 requested_service 只認五種服務代碼（見 rsa-rule-agent
+# service/rule_engine.py::SERVICE_CODE_TO_RULE_VALUE），special_operation_required
+# 是另一個獨立旗標；Judge Agent 再用這兩個值推回 RSA_train.db 的 category_id
+# （1 拖吊／2 特殊作業／4 急修，見 service/category_mapping.py）。
+_FIX_ITEM_TO_SERVICE = {
+    "接電": "BATTERY_JUMP_START",
+    "接電排空": "BATTERY_JUMP_START",
+    "換備胎": "TIRE_CHANGE",
+    "打氣一輪": "TIRE_CHANGE",
+    "打氣二輪": "TIRE_CHANGE",
+    "打氣三輪": "TIRE_CHANGE",
+    "代送油料": "FUEL_DELIVERY",
+}
+
+
+def handling_to_rule_agent_fields(items: list[str]) -> dict:
+    """理賠人員點選的處理情形 → {'requested_service', 'special_operation_required'}。
+
+    有任何拖吊類就算 TOWING（例如「接電排空→全載拖吊」最後還是拖走），
+    否則取第一個急修類項目的服務代碼。special_operation_required 跟處理歸類
+    同一套判斷（有「特殊作業／國道第二類現場處理」即為 True）。
+    只有「其他」自填或費用類、判斷不出服務項目時，兩個欄位都留 None，
+    讓 Rule Agent 誠實列為缺漏，不猜。
+    """
+    s = list(items or [])
+    service = None
+    if any(x in TOW_ITEMS for x in s):
+        service = "TOWING"
+    else:
+        for x in s:
+            if x in _FIX_ITEM_TO_SERVICE:
+                service = _FIX_ITEM_TO_SERVICE[x]
+                break
+    category = classify_handling(s)
+    special = None if category is None else (category == "特殊作業")
+    return {"requested_service": service, "special_operation_required": special}

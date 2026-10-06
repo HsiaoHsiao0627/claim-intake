@@ -317,7 +317,7 @@ def _blank(value) -> bool:
 # 的「## 案件描述」格式），不是結構化欄位，這裡把表單欄位組成一段敘述文字。
 # 刻意用「（未提供）」而不是略過欄位，讓 Rules Agent 自己判斷資訊夠不夠，
 # 不要讓 claim-intake 這邊先幫忙腦補或省略掉空欄位造成的資訊落差。
-def _build_tpl_case_description(submitted_fields: dict) -> str:
+def _build_tpl_case_description(submitted_fields: dict, document_note: str = "") -> str:
     accident_area = submitted_fields.get("accident_area") or "（未提供）"
     own_fault_pct = submitted_fields.get("own_fault_pct")
     own_fault_str = f"{own_fault_pct}%" if own_fault_pct not in (None, "") else "（未提供，責任比例尚未確定）"
@@ -325,12 +325,46 @@ def _build_tpl_case_description(submitted_fields: dict) -> str:
     general_desc = submitted_fields.get("description") or "（未提供）"
     claim_amount = submitted_fields.get("claim_amount")
     claim_amount_str = f"新台幣 {claim_amount} 元" if claim_amount not in (None, "") else "（未提供）"
-    return (
+    base = (
         f"事故地區：{accident_area}。本車肇責比例：{own_fault_str}。\n"
         f"傷勢描述：{injury_desc}\n"
         f"事故經過：{general_desc}\n"
         f"申請理賠金額：{claim_amount_str}"
     )
+    return f"{base}\n{document_note}" if document_note else base
+
+
+# 2026-09 新增：TPL Rules Agent 的 missing_data 幾乎都是「診斷書」「醫療費收據」
+# 「和解書」這類文件缺漏（實測 296 筆真實案件裡 98.6% 判「資料不足」，主因正是
+# 這個）。根本原因是 case_description 這段自由文字裡從來沒有任何地方提到保戶
+# 到底有沒有附文件——RSA 那邊有 documents.available_types 這個結構化欄位可以
+# 講清楚，TPL 這裡完全沒有對應機制。
+#
+# 這裡只誠實地講「OCR 真的驗證過的東西」：有沒有上傳佐證文件（純粹計數，
+# 不臆測文件種類）、以及 OCR 有沒有讀到明確的診斷病名／金額——不會宣稱有
+# 「和解書」「憲警處理證明」「理賠申請書」「戶口名簿」「行照駕照」這幾種
+# 完全沒有 OCR 欄位可以驗證的文件種類，避免對 Rules Agent 謊報資料完整度。
+def _build_tpl_document_note(file_paths: dict, ocr_result: dict) -> str:
+    evidence_files = file_paths.get("evidence") or []
+    policy_files = file_paths.get("policy") or []
+    evidence_fields = (ocr_result.get("evidence") or {}).get("fields") or {}
+
+    if not evidence_files and not policy_files:
+        return "檢附文件：保戶尚未上傳任何保單或佐證文件。"
+
+    parts = [f"檢附文件：已上傳保單文件 {len(policy_files)} 份、佐證文件 {len(evidence_files)} 份。"]
+    diagnosis = evidence_fields.get("diagnosis")
+    amount = evidence_fields.get("amount")
+    verified_bits = []
+    if diagnosis:
+        verified_bits.append(f"其中一份文件載明診斷病名為「{diagnosis}」")
+    if amount not in (None, ""):
+        verified_bits.append(f"載明金額為新台幣 {amount} 元")
+    if verified_bits:
+        parts.append("，".join(verified_bits) + "。")
+    else:
+        parts.append("文件內容尚未能自動辨識出具體診斷或金額，實際文件種類與內容需人工核對。")
+    return "".join(parts)
 
 
 def _build_judge_case_from_tpl(case_id: str, submitted_fields: dict, ocr_result: dict,
@@ -485,6 +519,22 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
         if not _blank(policy_ocr_fields.get("vehicle_use")):
             rsa_fields["vehicle_use"] = policy_ocr_fields["vehicle_use"]
 
+        # 2026-10 新增：理賠人員登錄的 RSA 案件，處理情形／故障地點／事故公里數
+        # 是人員依派工紀錄手動輸入的結構化資料，比 OCR 跟描述解析都可靠，
+        # 這幾個欄位一律以人員輸入為準（優先序：人員輸入 > OCR > 描述解析）。
+        # 人員沒填的欄位不覆蓋，維持 OCR／描述解析的結果或 None。
+        if submitted_fields.get("intake_mode") == "staff":
+            staff_items = [submitted_fields.get(k) for k in ("handling_1", "handling_2", "handling_3")]
+            staff_rsa = staff_rules.handling_to_rule_agent_fields(
+                staff_rules.normalize_handling(staff_items))
+            for key, value in staff_rsa.items():
+                if value is not None:
+                    rsa_fields[key] = value
+            if not _blank(submitted_fields.get("fault_location")):
+                rsa_fields["location"] = submitted_fields["fault_location"]
+            if submitted_fields.get("accident_km") is not None:
+                rsa_fields["towing_distance_km"] = submitted_fields["accident_km"]
+
         # rsa_addon_purchased 是表單上的手動選單（是／否／不確定），代表保戶
         # 或客服人員的明確輸入，永遠優先。只有保戶留空（未確認／不確定）時，
         # 才用 OCR 從保單文件上讀到的值頂上——這裡是唯一會回頭修改
@@ -507,10 +557,20 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
         if file_paths.get("evidence"):
             available_document_types.append("service_request_record")
 
+        # 2026-09 新增：查詢這張保單在事故日往前 365 天內、已核准放行的歷史 RSA
+        # 案件次數/金額，餵給 decide_rsa_v3() 的 usage.used_count_before_case／
+        # used_amount_before_case——這兩個欄位原本永遠是 None，是 Advisory LLM
+        # 判定「資料不足」進而讓 Agreement Gate 卡在 BLOCKED 的常見原因之一
+        # （見 store.py::get_rsa_usage_before_case() 的完整說明）。
+        usage_before_case = store.get_rsa_usage_before_case(
+            submitted_fields.get("policy_no"), submitted_fields.get("incident_date"), case_id
+        )
+
         claim_data = {**submitted_fields, "ocr_result": ocr_result,
                       "description_parsed": parse_result,
                       "rsa_fields": rsa_fields,
-                      "available_document_types": available_document_types}
+                      "available_document_types": available_document_types,
+                      "usage_before_case": usage_before_case}
 
         # 2026-08 新增：第三人責任險（TPL）案件現在是三段式管線：
         #   tpl-rules-agent-api（拒賠/理賠/資料不足/疑似詐欺 四選一把關）
@@ -533,7 +593,8 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
                 return
 
             rules_client = seams.get_tpl_rules_agent_client()
-            case_description = _build_tpl_case_description(submitted_fields)
+            document_note = _build_tpl_document_note(file_paths, ocr_result)
+            case_description = _build_tpl_case_description(submitted_fields, document_note)
             try:
                 rules_result = await rules_client.get_decision(case_description)
             except Exception as e:

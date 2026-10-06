@@ -34,3 +34,13 @@ def test_driver_id():
     assert "檢查碼" in r.check_driver_id("A123456788")
     assert "格式" in r.check_driver_id("12345")
     assert r.check_driver_id("") is None
+
+
+def test_handling_to_rule_agent_fields():
+    f = r.handling_to_rule_agent_fields
+    assert f(["全載拖吊"]) == {"requested_service": "TOWING", "special_operation_required": False}
+    assert f(["接電"]) == {"requested_service": "BATTERY_JUMP_START", "special_operation_required": False}
+    assert f(["接電排空", "平面拖吊"]) == {"requested_service": "TOWING", "special_operation_required": False}
+    assert f(["平面拖吊", "地下室B2作業", "特殊作業"]) == {"requested_service": "TOWING", "special_operation_required": True}
+    assert f(["換備胎", "打氣二輪"]) == {"requested_service": "TIRE_CHANGE", "special_operation_required": False}
+    assert f(["自行輸入的情形"]) == {"requested_service": None, "special_operation_required": None}

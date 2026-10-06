@@ -327,31 +327,48 @@
   $("rsaNewCase").addEventListener("click", resetForm);
   $("rsaDemoReset").addEventListener("click", resetForm);
 
-  // Demo 案例（暫定內容；車號、姓名為虛構，歷史資料這兩欄已雜湊）
+  // Demo 案例（2026-10 改版）：從 RSA_train.db 真實派工紀錄挑出三種處理類型
+  // 各一件，報修日期／時間／單號、專案、處理情形、公里數、簽收金額都取自
+  // 原始紀錄。去識別化：駕駛人 ID／姓名、車號、保單號為虛構；故障地點只保留
+  // 到路段（拿掉門牌），拖吊目的地只留廠名。description 只寫紀錄裡有的事實。
+  // 「保單有效」填「是」的依據：這幾筆在原始資料裡都有對應的專案卡號且已
+  // 簽收付款，代表事故當下方案有效。
   const RSA_STAFF_DEMO_CASES = [
-    { id: "tow", tag: "approve", tagLabel: "拖吊", title: "一般拖吊", desc: "市區拋錨全載拖吊，欄位齊全",
-      data: { report_date: "2026-02-28", report_time: "13:54", report_no: "9612301", policy_no: "POL-2026-88901", policy_active: "是",
-        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "ABC-1234", driver_id: "A123456789", driver_name: "王大明",
-        accident_km: "25", fault_location: "新北市林口區文化一路一段近崇林國中天橋", tow_destination: "私人廠//大義街16號",
-        claim_amount: "2800", description: "引擎無法發動，現場檢查後需拖回保養廠。" },
+    { id: "tow", tag: "approve", tagLabel: "一般拖吊", title: "一般拖吊",
+      desc: "平面停車場拋錨，全載拖吊 16 公里回保養廠（簽收 2,000 元）",
+      // 來源報修單號 9605505
+      data: { report_date: "2026-02-25", report_time: "10:21", report_no: "9605505", policy_no: "DEMO-RSA-0001", policy_active: "是",
+        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "DEMO-0001", driver_id: "E123456783", driver_name: "示範駕駛甲",
+        accident_km: "16", fault_location: "高雄市鼓山區美術南一街（平面停車）", tow_destination: "宏維汽車（私人保養廠）",
+        claim_amount: "2000", description: "依派工紀錄：10:21 報修，廠商到場後全載拖吊至保養廠，拖吊 16 公里，12:00 完成。" },
       picks: ["全載拖吊"] },
-    { id: "fix", tag: "approve", tagLabel: "急修", title: "接電急修", desc: "電瓶沒電，現場接電完成",
-      data: { report_date: "2026-02-01", report_time: "19:45", report_no: "9612455", policy_no: "POL-2026-77120", policy_active: "是",
-        project_name: "自費購道援險(50,000元,不限K次)", plate_no: "BKR-5520", driver_id: "H120530963", driver_name: "陳小華",
-        accident_km: "0", fault_location: "桃園市桃園區富國路646巷6弄40號", tow_destination: "", claim_amount: "950", description: "" },
+    { id: "jump", tag: "approve", tagLabel: "接電", title: "接電急修",
+      desc: "巷弄內電瓶沒電，現場接電完成、未拖吊（簽收 950 元）",
+      // 來源報修單號 9598262
+      data: { report_date: "2026-02-15", report_time: "17:01", report_no: "9598262", policy_no: "DEMO-RSA-0002", policy_active: "是",
+        project_name: "自費購道援險(50,000元,不限K次)", plate_no: "DEMO-0002", driver_id: "E224680132", driver_name: "示範駕駛乙",
+        accident_km: "0", fault_location: "高雄市仁武區京富路（巷弄內）", tow_destination: "",
+        claim_amount: "950", description: "依派工紀錄：17:01 報修，廠商到場現場接電，17:42 完成，未拖吊。" },
       picks: ["接電"] },
-    { id: "special", tag: "review", tagLabel: "特殊作業", title: "地下室特殊作業", desc: "平面拖吊加地下室作業，歸類為特殊作業",
-      data: { report_date: "2026-03-12", report_time: "08:20", report_no: "9620018", policy_no: "POL-2026-66031", policy_active: "",
-        project_name: "自費購道援險(10,000元,20K,3次)", plate_no: "RDN-7781", driver_id: "", driver_name: "林美玲",
-        accident_km: "8", fault_location: "台中市西屯區市政路500號 B2 停車場", tow_destination: "原廠台中服務廠",
-        claim_amount: "4700", description: "車輛停放於地下二樓，需以特殊設備拉出。" },
-      picks: ["平面拖吊", "特殊作業", "地下室B2作業"] },
+    { id: "special", tag: "review", tagLabel: "特殊作業", title: "地下室特殊作業",
+      desc: "廠區地下二樓（限高 2 米），平面拖吊加地下室特殊作業（簽收 5,050 元）",
+      // 來源報修單號 9603600
+      data: { report_date: "2026-02-23", report_time: "10:54", report_no: "9603600", policy_no: "DEMO-RSA-0003", policy_active: "是",
+        project_name: "自費購道援險(30,000元,60K,3次)", plate_no: "DEMO-0003", driver_id: "D120864200", driver_name: "示範駕駛丙",
+        accident_km: "21", fault_location: "台南市新市區環西路二段（廠區 B2 停車場，限高 2 米）", tow_destination: "駿達汽車（私人保養廠）",
+        claim_amount: "5050", description: "依派工紀錄：10:54 報修，車輛位於地下二樓、限高 2 米，以平面拖吊並執行地下室特殊作業拖出，拖吊 21 公里，16:22 完成。" },
+      picks: ["平面拖吊", "地下室B2作業", "特殊作業"] },
   ];
   renderDemoList(RSA_STAFF_DEMO_CASES, "rsaDemoList", c => {
     resetForm();
     Object.entries(c.data).forEach(([k, v]) => { const el = $("rsa_" + k); if (el) el.value = v; });
     $("rsa_incident_date").value = c.data.report_date;
     picks = c.picks.map(v => ({ value: v, other: false }));
+    // 跟 rsa.html／tpl.html 的 demo 一樣附上檔名標明 demo 的極小佔位圖，
+    // 讓 Rule Agent 的 documents.available_types 有「已附保單／派工單」這件事；
+    // 圖片本身沒有內容，OCR 讀不到任何欄位，不影響人員手填的資料。
+    policyUpload.addSimulated([makeDemoFile("demo_保單照片.png")]);
+    evidenceUpload.addSimulated([makeDemoFile("demo_派工單.png")]);
     renderPicks(); renderProject();
     checkReportNo(); checkDriverId();
     document.querySelectorAll("#rsaDemoList .demo-item").forEach(b => b.classList.toggle("active", b.dataset.id === c.id));
