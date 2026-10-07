@@ -404,7 +404,44 @@ function _agentCard(name, role, tone, statusText, paragraphs) {
 }
 
 // ---------------- 法官代理人（RSA／TPL 共用同一支 judge-agent） ----------------
+// 2026-10-07 起法官只決定「是否同意規則代理人的結論」：同意→放行，不同意→轉人工；
+// 詐欺只做標註（suspected_fraud），不影響放行。舊版輸出（沒有 agreement 欄位）照舊顯示。
+const JUDGE_ROLE = "確認規則代理人結論・標註詐欺";
+const CHECK_STATUS_TEXT = { pass: "通過", fail: "沒通過", na: "無法確認" };
+
+function _fraudParagraphs(j) {
+  const out = [];
+  const sf = j.suspected_fraud;
+  const flags = Array.isArray((j.fraud_flags || {}).flags) ? j.fraud_flags.flags : [];
+  const na = flags.filter(f => f.status === "na");
+  if (sf && sf.suspected) {
+    out.push(`詐欺標註：<strong>疑似詐欺</strong>（命中：${_list((sf.hit_flags || []).map(h => h.reason || h.flag_id))}）。這只是提醒承辦人員留意，不影響我是否同意放行。`);
+  } else if (flags.length && na.length === flags.length) {
+    out.push(`詐欺標註：無法判斷。${flags.length} 條詐欺規則都因為缺少資料（例如保單起訖日、報案日、歷史請領紀錄）沒辦法檢查，這代表「沒檢查」，不是「檢查過沒問題」。`);
+  } else if (flags.length) {
+    const hits = flags.filter(f => f.status === "hit");
+    out.push(`詐欺標註：未達疑似詐欺。實際檢查了 ${flags.length - na.length} 條規則`
+      + (hits.length ? `，有 ${hits.length} 條命中但未達標註門檻（${_list(hits.map(f => f.reason || f.flag_id))}）` : "，沒有命中")
+      + (na.length ? `；另外 ${na.length} 條因為缺少資料沒辦法檢查。` : "。"));
+  }
+  return out;
+}
+
 function _judgeParagraphs(j) {
+  const agreement = j.agreement;
+  if (!agreement || !Array.isArray(agreement.checks)) return _judgeParagraphsLegacy(j);
+  const out = [];
+  out.push(`我逐項確認能不能同意規則代理人的結論：`);
+  agreement.checks.forEach(c => {
+    out.push(`・${escapeHtml(c.label)}：<strong>${CHECK_STATUS_TEXT[c.status] || escapeHtml(c.status)}</strong>。${escapeHtml(c.detail || "")}`);
+  });
+  out.push(...(_fraudParagraphs(j)));
+  if (j.decision === "execute") out.push("綜合以上，我同意規則代理人的結論，可以放行。");
+  else out.push("有項目沒通過或無法確認，我不同意直接放行，交給承辦人員複核。");
+  return out;
+}
+
+function _judgeParagraphsLegacy(j) {
   const out = [];
   const fair = j.fairness_check || {};
   const fraud = j.fraud_flags || {};
@@ -443,7 +480,7 @@ function _judgeParagraphs(j) {
 }
 
 function _judgeStatus(decision) {
-  return { execute: ["同意放行", "ok"], return_for_recalc: ["退回重算", "warn"], escalate_human: ["建議轉人工", "warn"] }[decision]
+  return { execute: ["同意，放行", "ok"], escalate_human: ["不同意，轉人工", "warn"], return_for_recalc: ["退回重算", "warn"] }[decision]
     || ["未提供結論", "muted"];
 }
 
@@ -499,12 +536,12 @@ function _rsaReplies(data, pr) {
   const j = pr.rsa_judge_raw || (pr.rsa_judge_decision ? { decision: pr.rsa_judge_decision, reasons: pr.rsa_judge_reasons } : null);
   if (j) {
     const [st, tn] = _judgeStatus(j.decision);
-    cards.push(_agentCard("法官代理人", "稽核金額與詐欺風險", tn, st, _judgeParagraphs(j)));
+    cards.push(_agentCard("法官代理人", JUDGE_ROLE, tn, st, _judgeParagraphs(j)));
   } else if (pr.rsa_judge_note) {
-    cards.push(_agentCard("法官代理人", "稽核金額與詐欺風險", "warn", "沒有回應",
+    cards.push(_agentCard("法官代理人", JUDGE_ROLE, "warn", "沒有回應",
       ["理賠代理人已經給了金額，但這次我沒有成功完成稽核，金額公平性跟詐欺風險需要承辦人員複核。"]));
   } else {
-    cards.push(_agentCard("法官代理人", "稽核金額與詐欺風險", "muted", "這次沒有輪到我",
+    cards.push(_agentCard("法官代理人", JUDGE_ROLE, "muted", "這次沒有輪到我",
       ["前面還沒有產生建議金額，沒有東西可以讓我稽核。"]));
   }
   return cards;
@@ -573,9 +610,9 @@ function _tplReplies(data, pr) {
   if (claim) {
     const [st, tn] = _judgeStatus(pr.decision);
     const p = pr.simulated ? ["（這次沒有真的連到法官代理人服務，以下為保守的佔位結果。）"] : [];
-    cards.push(_agentCard("法官代理人", "稽核金額與詐欺風險", tn, st, p.concat(_judgeParagraphs(pr))));
+    cards.push(_agentCard("法官代理人", JUDGE_ROLE, tn, st, p.concat(_judgeParagraphs(pr))));
   } else {
-    cards.push(_agentCard("法官代理人", "稽核金額與詐欺風險", "muted", "這次沒有輪到我",
+    cards.push(_agentCard("法官代理人", JUDGE_ROLE, "muted", "這次沒有輪到我",
       ["前面還沒有產生建議金額，沒有東西可以讓我稽核。"]));
   }
   return cards;
@@ -599,7 +636,7 @@ function renderAgentReplies(data) {
         [`案件在交給我之前就先轉人工了，原因是：${escapeHtml(msg)}`])}
       ${_agentCard("理賠代理人", "建議賠多少", "muted", "這次沒有輪到我",
         ["前一關還沒判斷可以理賠，所以這次我沒有被呼叫。"])}
-      ${_agentCard("法官代理人", "稽核金額與詐欺風險", "muted", "這次沒有輪到我",
+      ${_agentCard("法官代理人", JUDGE_ROLE, "muted", "這次沒有輪到我",
         ["前面還沒有產生建議金額，沒有東西可以讓我稽核。"])}
     </div>`;
   }

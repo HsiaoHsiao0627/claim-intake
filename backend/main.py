@@ -667,6 +667,13 @@ async def _process_claim(case_id: str, submitted_fields: dict, file_paths: dict)
                     judge_case = _build_judge_case_from_tpl(
                         case_id, submitted_fields, ocr_result, last_suggestion, retry_count
                     )
+                    # 法官只決定「是否同意規則代理人的結論」，要知道規則代理人判了什麼。
+                    # 走到這裡代表規則代理人判「理賠」且沒有標記 needs_manual_review。
+                    judge_case["rule_agent"] = {
+                        "decision": rules_decision,
+                        "released": not rules_result.get("needs_manual_review"),
+                        "source": "tpl-rules-agent-api",
+                    }
                     try:
                         judge_result = await judge_client.judge(judge_case)
                     except Exception as e:
